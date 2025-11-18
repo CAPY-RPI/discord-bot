@@ -27,16 +27,15 @@ dev = [
 # Scripts
 # =====================================================
 [tool.taskipy.tasks]
-start = "python -m bot"
-lint = "pre-commit run --all-files"
-precommit = "pre-commit install"
-build = "docker build -t capy-discord ."
-run = "docker run -it --rm capy-discord"
-test = "pytest -n auto --ff"
-retest = "pytest -n auto --lf"
-testcov = "pytest -n auto --cov-report= --cov"
-report = "coverage report"
-commit = "git add . && git commit -m"
+start = { cmd = "python -m bot.main", help = "Runs the python application locally." }
+lint = { cmd = "pre-commit install && pre-commit run --all-files", help = "Installs git hooks if needed, then lints and formats the codebase." }
+build = { cmd = "docker build -t capy-discord .", help = "Builds the application's Docker image." }
+run = { cmd = "docker run -it --rm capy-discord", help = "Runs the application inside a new Docker container." }
+dev = { cmd = "docker run -it --rm -v ./bot:/app/bot capy-discord", help = "Runs the app in Docker with local code mounted for live changes." }
+test = { cmd = "pytest -n auto --ff", help = "Runs all tests, starting with previously failed ones." }
+retest = { cmd = "pytest -n auto --lf", help = "Reruns only the tests that failed during the last run." }
+testcov = { cmd = "pytest -n auto --cov-report= --cov && coverage report", help = "Runs tests and generates coverage data." }
+commit = { cmd = "pre-commit install && git add . && git commit -m", help = "Stages all changes and opens a commit message prompt." }
 
 # =====================================================
 # Ruff Linting Configuration
