@@ -1,0 +1,82 @@
+# =====================================================
+# Project Settings
+# =====================================================
+[project]
+name = "capy-discord"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic-settings>=2.12.0",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.4.0",
+    "pytest>=9.0.1",
+    "ruff>=0.14.5",
+    "ty>=0.0.1a26",
+    "uv>=0.9.10",
+]
+
+# =====================================================
+# Ruff Linting Configuration
+# =====================================================
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    # --- Core & Syntax (The Basics) ---
+    "F",      # Pyflakes: Catches syntax errors and undefined names
+    "E",      # pycodestyle Error: Logical and style errors
+    "W",      # pycodestyle Warning: Style warnings
+    "C90",    # McCabe: Flags functions that are too complex (cyclomatic complexity)
+
+    # --- Modernization & Formatting ---
+    "I",      # isort: Sorts imports automatically
+    "UP",     # pyupgrade: Enforces modern Python syntax (e.g., f-strings over .format())
+    "D",      # pydocstyle: Enforces docstring conventions (Google/NumPy style)
+
+    # --- Best Practices (Bug Prevention) ---
+    "B",      # flake8-bugbear: Catches common bugs and design flaws
+    "SIM",    # flake8-simplify: Suggests cleaner, simpler code patterns
+    "C4",     # flake8-comprehensions: Enforces better list/dict/set comprehensions
+    "A",      # flake8-builtins: Prevents shadowing built-ins (like naming a var 'list')
+    "RET",    # flake8-return: Enforces consistent return statements
+
+    # --- Strict Typing & Annotations ---
+    "ANN",    # flake8-annotations: FORCES type annotations on everything
+    "TCH",    # flake8-type-checking: Moves typing-only imports behind 'if TYPE_CHECKING:'
+    "N",      # pep8-naming: Enforces strict variable/class naming conventions
+    "ARG",    # flake8-unused-arguments: flags unused function arguments
+
+    # --- Safety, Security & Reliability ---
+    "S",      # flake8-bandit: Security testing (e.g., hardcoded passwords)
+    "DTZ",    # flake8-datetimez: Bans naive datetimes (must use timezones)
+    "TRY",    # tryceratops: Enforces better exception handling practices
+
+    # --- Performance & Logging ---
+    "PERF",   # Perflint: Checks for performance anti-patterns
+    "LOG",    # flake8-logging: Enforces logging best practices
+    "T20",    # flake8-print: Bans 'print' statements (force use of logger)
+
+    # --- Cleanliness & Refactoring ---
+    "ERA",    # eradicate: Bans commented-out code
+    "PL",     # Pylint: The "Strict" refactoring rules (PLR), conventions (PLC), etc.
+    "RUF",    # Ruff-specific: Custom rules from the Ruff team (often new best practices)
+
+    # --- Testing ---
+    "PT",     # flake8-pytest-style: Enforces best practices for pytest
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D", "ARG", "S"]
