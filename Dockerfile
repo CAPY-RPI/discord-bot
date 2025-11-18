@@ -23,8 +23,8 @@ ENV GIT_SHA=$git_sha
 COPY --from=builder /build /build
 ENV PATH="/build/.venv/bin:$PATH"
 
-WORKDIR /app/bot
-COPY . .
+WORKDIR /app
+COPY bot/ ./bot/
 
 ENTRYPOINT ["python"]
-CMD ["main.py"]
+CMD ["-m", "bot.main"]
