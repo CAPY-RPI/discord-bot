@@ -1,7 +1,11 @@
 ARG python_version=3.13-slim
+ARG uv_version=0.9.10
+
+# Create a stage specifically for the uv binary to work around the --from limitation.
+FROM ghcr.io/astral-sh/uv:${uv_version} AS uv
 
 FROM python:${python_version} AS builder
-COPY --from=ghcr.io/astral-sh/uv:0.9.10 /uv /bin/
+COPY --from=uv /uv /bin/
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy

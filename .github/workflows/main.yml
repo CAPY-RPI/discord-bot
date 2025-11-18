@@ -1,0 +1,44 @@
+name: Continuous Integration (CI)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-test:
+    name: Lint and Test Code
+    uses: ./.github/workflows/lint-test.yml
+    # This job runs linting checks and unit tests on the codebase.
+
+  generate-sha-tag:
+    name: Generate SHA Tag
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      sha-tag: ${{ steps.sha-tag.outputs.sha-tag }}
+    steps:
+      - name: Create SHA Container tag
+        id: sha-tag
+        run: |
+          tag=$(cut -c 1-7 <<< $GITHUB_SHA)
+          echo "sha-tag=$tag" >> $GITHUB_OUTPUT
+    # This job generates a short SHA tag from the commit hash, specifically for the 'main' branch.
+
+  build-deploy:
+    name: Build and Deploy Application
+    uses: ./.github/workflows/build-deploy.yml
+    needs: [lint-test, generate-sha-tag]
+    permissions:
+      contents: read # To checkout the repository in the reusable workflow.
+      packages: write # To push the Docker image to GHCR.
+    with:
+      sha-tag: ${{ needs.generate-sha-tag.outputs.sha-tag }}
+    secrets: inherit
+    # This job builds the application and deploys it, depending on the successful completion of linting/testing
+    # and the generation of a SHA tag. It uses inherited secrets for deployment.

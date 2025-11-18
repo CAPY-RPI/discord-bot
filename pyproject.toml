@@ -34,8 +34,8 @@ run = { cmd = "docker run -it --rm capy-discord", help = "Runs the application i
 dev = { cmd = "docker run -it --rm -v ./bot:/app/bot capy-discord", help = "Runs the app in Docker with local code mounted for live changes." }
 test = { cmd = "pytest -n auto --ff", help = "Runs all tests, starting with previously failed ones." }
 retest = { cmd = "pytest -n auto --lf", help = "Reruns only the tests that failed during the last run." }
-testcov = { cmd = "pytest -n auto --cov-report= --cov && coverage report", help = "Runs tests and generates coverage data." }
-commit = { cmd = "pre-commit install && git add . && git commit -m", help = "Stages all changes and opens a commit message prompt." }
+testcov = { cmd = "pytest -n auto --cov=bot --cov-report= && coverage report", help = "Runs tests, generates coverage data, and fails if coverage is below 80%." }
+commit = { cmd = "pre-commit install && git add . && git commit -m", help = "Stages all changes and commits with message." }
 
 # =====================================================
 # Ruff Linting Configuration
