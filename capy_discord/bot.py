@@ -2,7 +2,7 @@
 
 from discord.ext.commands import AutoShardedBot
 
-from capy_discord.utils.extensions import EXTENSIONS
+from capy_discord.utils import EXTENSIONS
 
 
 class Bot(AutoShardedBot):
