@@ -8,9 +8,10 @@ from capy_discord.logging import setup_logging
 
 def main() -> None:
     """Main function to run the application."""
-    setup_logging()
+    setup_logging(settings.log_level)
+
     capy_discord.instance = Bot(command_prefix=settings.prefix, intents=discord.Intents.all())
-    capy_discord.instance.run(settings.token)
+    capy_discord.instance.run(settings.token, log_handler=None)
 
 
 main()
