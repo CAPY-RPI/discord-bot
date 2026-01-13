@@ -81,7 +81,7 @@ def setup_logging(level: int | str = logging.INFO) -> None:
     file_formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
     file_handler.setFormatter(file_formatter)
 
-    # Removing previous handlers to avoid duplicate logs from discord after setup_logging invokation
+    # Removing previous handlers to avoid duplicate logs from discord after setup_logging invocation
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
 
