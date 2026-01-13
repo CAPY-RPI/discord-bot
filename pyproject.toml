@@ -32,8 +32,8 @@ lint = { cmd = "pre-commit install && pre-commit run --all-files", help = "Insta
 build = { cmd = "docker build -t capy-discord .", help = "Builds the application's Docker image." }
 run = { cmd = "docker run -it --rm capy-discord", help = "Runs the application inside a new Docker container." }
 dev = { cmd = "docker run -it --rm -v ./bot:/app/bot capy-discord", help = "Runs the app in Docker with local code mounted for live changes." }
-test = { cmd = "pytest -n auto --ff", help = "Runs all tests, starting with previously failed ones." }
-retest = { cmd = "pytest -n auto --lf", help = "Reruns only the tests that failed during the last run." }
+test = { cmd = "pytest -n auto --ff || (code=$?; if [ $code -eq 5 ]; then exit 0; else exit $code; fi)", help = "Runs all tests, starting with previously failed ones." }
+retest = { cmd = "pytest -n auto --lf || (code=$?; if [ $code -eq 5 ]; then exit 0; else exit $code; fi)", help = "Reruns only the tests that failed during the last run." }
 testcov = { cmd = "pytest -n auto --cov=bot --cov-report= && coverage report", help = "Runs tests, generates coverage data, and fails if coverage is below 80%." }
 commit = { cmd = "pre-commit install && git add . && git commit -m", help = "Stages all changes and commits with message." }
 
