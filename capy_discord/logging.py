@@ -1,5 +1,7 @@
 import logging
 import sys
+from datetime import UTC, datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Final
 
@@ -51,22 +53,37 @@ def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-def setup_logging(level: int = logging.INFO) -> None:
+def setup_logging(level: int | str = logging.INFO) -> None:
     """Set up the logging configuration with the specified level."""
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
     # Create a handler that writes to stdout
-    handler = logging.StreamHandler(sys.stdout)
-    formatter = ColoredFormatter(LOG_FORMAT, datefmt=DATE_FORMAT)
-    handler.setFormatter(formatter)
+    stream_handler = logging.StreamHandler(sys.stdout)
+    colored_formatter = ColoredFormatter(LOG_FORMAT, datefmt=DATE_FORMAT)
+    stream_handler.setFormatter(colored_formatter)
 
     # Create a log directory if it doesn't exist
     log_dir = Path("logs")
     log_dir.mkdir(exist_ok=True)
 
+    # Create a timestamped filename
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M-%S")
+    log_filename = log_dir / f"capy-discord_{timestamp}.log"
+
+    # Create a handler that writes to a file with rotation
+    file_handler = RotatingFileHandler(
+        filename=log_filename,
+        maxBytes=5 * 1024 * 1024,  # 5 MB
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_formatter = logging.Formatter(LOG_FORMAT, datefmt=DATE_FORMAT)
+    file_handler.setFormatter(file_formatter)
+
     # Removing previous handlers to avoid duplicate logs from discord after setup_logging invokation
     if root_logger.hasHandlers():
         root_logger.handlers.clear()
 
-    root_logger.addHandler(handler)
+    root_logger.addHandler(stream_handler)
+    root_logger.addHandler(file_handler)

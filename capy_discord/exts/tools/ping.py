@@ -20,7 +20,7 @@ class Ping(commands.Cog):
             latency = round(capy_discord.instance.latency * 1000)  # in ms
             message = f"Pong! {latency} ms Latency!"
             embed = discord.Embed(title="Ping", description=message)
-            self.logger.info(f"/ping invoked user: {interaction.user.id} guild: {interaction.guild_id}")
+            self.logger.info("/ping invoked user: %s guild: %s", interaction.user.id, interaction.guild_id)
 
             await interaction.response.send_message(embed=embed)
 

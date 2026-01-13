@@ -24,7 +24,7 @@ class Sync(commands.Cog):
     async def _sync_commands(self) -> list[discord.app_commands.AppCommand]:
         """Synchronize commands with Discord."""
         synced_commands: list[discord.app_commands.AppCommand] = await capy_discord.instance.tree.sync()
-        self.logger.info(f"_sync_commands internal: {synced_commands}")
+        self.logger.info("_sync_commands internal: %s", synced_commands)
         return synced_commands
 
     @commands.command(name="sync", hidden=True)
@@ -34,7 +34,7 @@ class Sync(commands.Cog):
             synced = await self._sync_commands()
 
             description = f"Synced {len(synced)} commands: {[cmd.name for cmd in synced]}"
-            self.logger.info(f"!sync invoked user: {ctx.author.id} guild: {ctx.guild.id}")
+            self.logger.info("!sync invoked user: %s guild: %s", ctx.author.id, ctx.guild.id)
             await ctx.send(description)
 
         except Exception:
@@ -47,7 +47,7 @@ class Sync(commands.Cog):
         try:
             synced = await self._sync_commands()
             description = f"Synced {len(synced)} commands: {[cmd.name for cmd in synced]}"
-            self.logger.info(f"/sync invoked user: {interaction.user.id} guild: {interaction.guild_id}")
+            self.logger.info("/sync invoked user: %s guild: %s", interaction.user.id, interaction.guild_id)
             await interaction.response.send_message(description)
 
         except Exception:
