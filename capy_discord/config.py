@@ -1,3 +1,5 @@
+import logging
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,7 +17,7 @@ class EnvConfig(BaseSettings):
 class Settings(EnvConfig):
     """Manages application settings using Pydantic."""
 
-    log_level: str = "INFO"
+    log_level: int = logging.INFO
     prefix: str = "/"
     token: str = ""
 
