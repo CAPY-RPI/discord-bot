@@ -21,6 +21,7 @@ class Sync(commands.Cog):
     def __init__(self) -> None:
         """Initialize the Sync cog."""
         self.log = logging.getLogger(__name__)
+        self.log.info("Sync cog initialized")
 
     async def _sync_commands(self) -> list[discord.app_commands.AppCommand]:
         """Synchronize commands with Discord."""

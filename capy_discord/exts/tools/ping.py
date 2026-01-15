@@ -11,6 +11,7 @@ class Ping(commands.Cog):
     def __init__(self) -> None:
         """Initialize the Ping cog."""
         self.log = logging.getLogger(__name__)
+        self.log.info("Ping cog initialized")
 
     @app_commands.command(name="ping", description="Shows the bot's latency")
     async def ping(self, interaction: discord.Interaction) -> None:

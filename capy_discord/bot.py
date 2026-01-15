@@ -23,5 +23,3 @@ class Bot(AutoShardedBot):
                 self.log.info("Loaded extension: %s", extension)
             except Exception:
                 self.log.exception("Failed to load extension: %s", extension)
-
-    pass
