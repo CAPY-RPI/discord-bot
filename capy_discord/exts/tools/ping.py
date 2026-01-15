@@ -10,7 +10,7 @@ class Ping(commands.Cog):
 
     def __init__(self) -> None:
         """Initialize the Ping cog."""
-        self.logger = logging.getLogger(__name__)
+        self.log = logging.getLogger(__name__)
 
     @app_commands.command(name="ping", description="Shows the bot's latency")
     async def ping(self, interaction: discord.Interaction) -> None:
@@ -19,12 +19,12 @@ class Ping(commands.Cog):
             latency = round(interaction.client.latency * 1000)  # in ms
             message = f"Pong! {latency} ms Latency!"
             embed = discord.Embed(title="Ping", description=message)
-            self.logger.info("/ping invoked user: %s guild: %s", interaction.user.id, interaction.guild_id)
+            self.log.info("/ping invoked user: %s guild: %s", interaction.user.id, interaction.guild_id)
 
             await interaction.response.send_message(embed=embed)
 
         except Exception:
-            self.logger.exception("/ping attempted user")
+            self.log.exception("/ping attempted user")
             await interaction.response.send_message("We're sorry, this interaction failed. Please contact an admin.")
 
 
