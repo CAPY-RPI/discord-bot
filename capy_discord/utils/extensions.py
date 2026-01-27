@@ -41,14 +41,14 @@ def walk_extensions() -> Iterator[str]:
         raise ImportError(name=name)  # pragma: no cover
 
     for module in pkgutil.walk_packages(exts.__path__, f"{exts.__name__}.", onerror=on_error):
-        if unqualify(module.name).startswith("_"):
-            # Ignore module/package names starting with an underscore.
+        if any(part.startswith("_") for part in module.name.split(".")):
             continue
 
         if module.ispkg:
             imported = importlib.import_module(module.name)
             if not inspect.isfunction(getattr(imported, "setup", None)):
-                # If it lacks a setup function, it's not an extension.
+                # If it's a package but lacks a setup function, it's just a namespace/container.
+                # We don't yield it, but pkgutil will continue to walk its contents.
                 continue
 
         yield module.name

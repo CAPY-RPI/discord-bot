@@ -93,6 +93,7 @@ select = [
 ignore = [
     "D100", # Missing docstring in public module
     "D104", # Missing docstring in public package
+    "ERA001" # Commented out code (server setup purposes)
 ]
 
 [tool.ruff.lint.per-file-ignores]
