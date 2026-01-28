@@ -1,6 +1,7 @@
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import discord
 
@@ -16,7 +17,7 @@ def setup_logging(level: int = logging.INFO) -> None:
     log_dir.mkdir(exist_ok=True)
 
     # 2. Generate timestamped filename for this session
-    timestamp = datetime.now(tz=UTC).strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d_%H-%M-%S")
     log_file = log_dir / f"capy_{timestamp}.log"
 
     # 3. Setup Console Logging (Standard Discord format)
