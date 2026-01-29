@@ -39,11 +39,17 @@ class Sync(commands.Cog):
         """Sync commands manually with "!" prefix (owner only)."""
         try:
             if spec in [".", "guild"]:
+                if ctx.guild is None:
+                    await ctx.send("This command must be used in a guild.")
+                    return
                 # Instant sync to current guild
                 ctx.bot.tree.copy_global_to(guild=ctx.guild)
                 synced = await ctx.bot.tree.sync(guild=ctx.guild)
                 description = f"Synced {len(synced)} commands to **current guild**."
             elif spec == "clear":
+                if ctx.guild is None:
+                    await ctx.send("This command must be used in a guild.")
+                    return
                 # Clear guild commands
                 ctx.bot.tree.clear_commands(guild=ctx.guild)
                 await ctx.bot.tree.sync(guild=ctx.guild)
