@@ -71,13 +71,7 @@ class Sync(commands.Cog):
     async def sync_slash(self, interaction: discord.Interaction) -> None:
         """Sync commands via slash command."""
         try:
-            if capy_discord.instance is None:
-                # Log error and return early
-                self.log.error("/sync failed: Bot instance is None")
-                await interaction.response.send_message("Internal error: Bot instance not found.", ephemeral=True)
-                return
-
-            synced = await capy_discord.instance.tree.sync()
+            synced = await self._sync_commands()
             description = f"Synced {len(synced)} commands: {[cmd.name for cmd in synced]}"
             self.log.info("/sync invoked user: %s guild: %s", interaction.user.id, interaction.guild_id)
             await interaction.response.send_message(description)
