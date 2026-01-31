@@ -7,8 +7,8 @@ from discord.ext import commands
 from discord.ext.commands import AutoShardedBot, Bot
 
 from capy_discord.config import settings
+from capy_discord.ui.embeds import error_embed, success_embed
 from capy_discord.ui.views import BaseView
-from capy_discord.utils.embeds import error_embed, success_embed
 from capy_discord.utils.extensions import walk_extensions
 
 log = logging.getLogger(__name__)

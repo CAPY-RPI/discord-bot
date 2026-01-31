@@ -6,9 +6,9 @@ import discord
 from discord import app_commands, ui
 from discord.ext import commands
 
+from capy_discord.ui.embeds import error_embed, info_embed, success_embed
 from capy_discord.ui.forms import ModelModal
 from capy_discord.ui.views import BaseView
-from capy_discord.utils.embeds import error_embed, info_embed, success_embed
 
 from ._schemas import UserProfileSchema
 

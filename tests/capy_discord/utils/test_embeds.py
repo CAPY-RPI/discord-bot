@@ -2,7 +2,7 @@
 
 import discord
 
-from capy_discord.utils.embeds import (
+from capy_discord.ui.embeds import (
     error_embed,
     ignored_embed,
     important_embed,
