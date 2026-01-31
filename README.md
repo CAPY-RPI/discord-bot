@@ -86,7 +86,7 @@ We use `uv run task` to ensure consistent execution:
 
 ### Current Contributors
 
-*Thank you for your continuous effort into advancing our mission.*
+*Thank you for your continuous effort into advancing our mission:*
 Sayed Imtiazuddin, Jonathan Green, Ethan Beloff, Cindy Yang
 
 ### **Past Contributors**
