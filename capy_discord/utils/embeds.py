@@ -4,7 +4,6 @@ import discord
 
 STATUS_ERROR = discord.Color.red()
 STATUS_SUCCESS = discord.Color.green()
-STATUS_RESOLVED = discord.Color.green()
 STATUS_INFO = discord.Color.blue()
 STATUS_WARNING = discord.Color.yellow()
 STATUS_IMPORTANT = discord.Color.gold()
@@ -35,7 +34,7 @@ def success_embed(title: str, description: str) -> discord.Embed:
     Returns:
         discord.Embed: The created embed.
     """
-    return discord.Embed(title=title, description=description, color=STATUS_RESOLVED)
+    return discord.Embed(title=title, description=description, color=STATUS_SUCCESS)
 
 
 def info_embed(title: str, description: str) -> discord.Embed:
