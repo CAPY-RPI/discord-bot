@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from capy_discord.ui.forms import ModelModal
 from capy_discord.ui.views import BaseView
+from capy_discord.utils.embeds import error_embed, info_embed, success_embed
 
 from ._schemas import UserProfileSchema
 
@@ -74,14 +75,14 @@ class Profile(commands.Cog):
         current_profile = self.profiles.get(user_id)
 
         if action == "create" and current_profile:
-            await interaction.response.send_message(
-                "You already have a profile! Use `/profile action:update` to edit it.", ephemeral=True
+            embed = error_embed(
+                "Profile Exists", "You already have a profile! Use `/profile action:update` to edit it."
             )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         if action == "update" and not current_profile:
-            await interaction.response.send_message(
-                "You don't have a profile yet! Use `/profile action:create` first.", ephemeral=True
-            )
+            embed = error_embed("No Profile", "You don't have a profile yet! Use `/profile action:create` first.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         # Convert Pydantic model to dict for initial data if it exists
@@ -102,9 +103,8 @@ class Profile(commands.Cog):
         profile = self.profiles.get(interaction.user.id)
 
         if not profile:
-            await interaction.response.send_message(
-                "You haven't set up a profile yet! Use `/profile action:create`.", ephemeral=True
-            )
+            embed = error_embed("No Profile", "You haven't set up a profile yet! Use `/profile action:create`.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         embed = self._create_profile_embed(interaction.user, profile)
@@ -115,7 +115,8 @@ class Profile(commands.Cog):
         profile = self.profiles.get(interaction.user.id)
 
         if not profile:
-            await interaction.response.send_message("You don't have a profile to delete.", ephemeral=True)
+            embed = error_embed("No Profile", "You don't have a profile to delete.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         view = ConfirmDeleteView()
@@ -131,9 +132,11 @@ class Profile(commands.Cog):
             # [DB CALL]: Delete profile
             del self.profiles[interaction.user.id]
             self.log.info("Deleted profile for user %s", interaction.user)
-            await interaction.followup.send("✅ Your profile has been deleted.", ephemeral=True)
+            embed = success_embed("Profile Deleted", "Your profile has been deleted.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
         else:
-            await interaction.followup.send("❌ Profile deletion cancelled.", ephemeral=True)
+            embed = info_embed("Cancelled", "Profile deletion cancelled.")
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def _handle_profile_submit(self, interaction: discord.Interaction, profile: UserProfileSchema) -> None:
         """Process the valid profile submission."""
@@ -143,7 +146,8 @@ class Profile(commands.Cog):
         self.log.info("Updated profile for user %s", interaction.user)
 
         embed = self._create_profile_embed(interaction.user, profile)
-        await interaction.response.send_message(content="✅ Profile updated successfully!", embed=embed, ephemeral=True)
+        success = success_embed("Profile Updated", "Your profile has been updated successfully!")
+        await interaction.response.send_message(embeds=[success, embed], ephemeral=True)
 
     def _create_profile_embed(self, user: discord.User | discord.Member, profile: UserProfileSchema) -> discord.Embed:
         """Helper to build the profile display embed."""
