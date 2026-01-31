@@ -4,6 +4,7 @@ from typing import Literal
 import discord
 from discord import app_commands, ui
 from discord.ext import commands
+from discord.ext.commands import AutoShardedBot, Bot
 
 from capy_discord.config import settings
 from capy_discord.ui.views import BaseView
@@ -32,8 +33,8 @@ class HotswapSelect(ui.Select):
         cog_name = self.values[0]
         bot = interaction.client
 
-        if not isinstance(bot, commands.Bot):
-            log.error("Interaction client is not a commands.Bot instance.")
+        if not isinstance(bot, (Bot, AutoShardedBot)):
+            log.error("Interaction client is not a Bot or AutoShardedBot instance.")
             return
 
         try:
