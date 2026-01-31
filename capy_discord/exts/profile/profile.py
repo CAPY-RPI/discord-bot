@@ -56,6 +56,7 @@ class Profile(commands.Cog):
             app_commands.Choice(name="update", value="update"),
             app_commands.Choice(name="show", value="show"),
             app_commands.Choice(name="delete", value="delete"),
+            app_commands.Choice(name="test", value="test"),
         ]
     )
     async def profile(self, interaction: discord.Interaction, action: str) -> None:
@@ -66,6 +67,8 @@ class Profile(commands.Cog):
             await self.handle_show_action(interaction)
         elif action == "delete":
             await self.handle_delete_action(interaction)
+        elif action == "test":
+            await interaction.response.send_message("Profile Cog: **Test Version 2.0**", ephemeral=True)
 
     async def handle_edit_action(self, interaction: discord.Interaction, action: str) -> None:
         """Logic for creating or updating a profile."""
@@ -166,5 +169,5 @@ class Profile(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    """Set up the Sync cog."""
+    """Set up the Profile cog."""
     await bot.add_cog(Profile(bot))
