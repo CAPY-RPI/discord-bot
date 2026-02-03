@@ -1,3 +1,8 @@
+"""Ping command cog.
+
+This module provides a simple ping command to check bot latency.
+"""
+
 import logging
 
 import discord
@@ -8,8 +13,9 @@ from discord.ext import commands
 class Ping(commands.Cog):
     """Cog for ping command."""
 
-    def __init__(self) -> None:
+    def __init__(self, bot: commands.Bot) -> None:
         """Initialize the Ping cog."""
+        self.bot = bot
         self.log = logging.getLogger(__name__)
         self.log.info("Ping cog initialized")
 
@@ -17,7 +23,7 @@ class Ping(commands.Cog):
     async def ping(self, interaction: discord.Interaction) -> None:
         """Respond with the bot's latency."""
         try:
-            latency = round(interaction.client.latency * 1000)  # in ms
+            latency = round(self.bot.latency * 1000)  # in ms
             message = f"Pong! {latency} ms Latency!"
             embed = discord.Embed(title="Ping", description=message)
             self.log.info("/ping invoked user: %s guild: %s", interaction.user.id, interaction.guild_id)
@@ -31,4 +37,4 @@ class Ping(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     """Set up the Ping cog."""
-    await bot.add_cog(Ping())
+    await bot.add_cog(Ping(bot))

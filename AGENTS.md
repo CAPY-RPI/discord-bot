@@ -132,3 +132,37 @@ To run arbitrary scripts or commands within the environment:
 ```bash
 uv run python path/to/script.py
 ```
+
+## 8. Git Commit Guidelines
+
+### Pre-Commit Hooks
+
+This project uses pre-commit hooks for linting. If a hook fails during commit:
+
+1. **DO NOT** use `git commit --no-verify` to bypass hooks.
+2. **DO** run `uv run task lint` manually to verify and fix issues.
+3. If `uv run task lint` passes but the hook still fails (e.g., executable not found), there is likely an environment issue with the pre-commit config that needs to be fixed.
+
+### Cog Initialization Pattern
+
+All Cogs **MUST** accept the `bot` instance as an argument in their `__init__` method:
+
+```python
+# CORRECT
+class MyCog(commands.Cog):
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(MyCog(bot))
+
+# INCORRECT - Do not use global instance or omit bot argument
+class MyCog(commands.Cog):
+    def __init__(self) -> None:  # Missing bot!
+        pass
+```
+
+This ensures:
+- Proper dependency injection
+- Testability (can pass mock bot)
+- No reliance on global state
