@@ -20,7 +20,7 @@ class Feedback(TicketBase):
         command_config = {
             "cmd_name": "feedback",
             "cmd_name_verbose": "Feedback Report",
-            "cmd_emoji": "📝",
+            "cmd_emoji": "",
             "description": "Provide general feedback",
             "request_channel_id": settings.ticket_feedback_channel_id,
         }
@@ -41,7 +41,7 @@ class Feedback(TicketBase):
     @app_commands.command(name="feedback", description="Provide general feedback")
     async def feedback(self, interaction: discord.Interaction) -> None:
         """Show feedback submission form."""
-        await self._show_feedback_button(interaction)
+        await self._show_feedback_modal(interaction)
 
 
 async def setup(bot: commands.Bot) -> None:

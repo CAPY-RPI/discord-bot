@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from capy_discord.exts import tickets
 from capy_discord.ui import embeds
+from capy_discord.ui.forms import ModelModal
 from capy_discord.ui.views import ModalLauncherView
 
 
@@ -47,6 +48,15 @@ class TicketBase(commands.Cog):
             content=f"{self.command_config['cmd_emoji']} Ready to submit feedback? Click the button below!",
             ephemeral=False,
         )
+
+    async def _show_feedback_modal(self, interaction: discord.Interaction) -> None:
+        """Show feedback modal directly without a button."""
+        modal = ModelModal(
+            model_cls=self.schema_cls,
+            callback=self._handle_ticket_submit,
+            title=self.command_config["cmd_name_verbose"],
+        )
+        await interaction.response.send_modal(modal)
 
     async def _validate_and_get_text_channel(self, interaction: discord.Interaction) -> TextChannel | None:
         """Validate configured channel and return it if valid."""
