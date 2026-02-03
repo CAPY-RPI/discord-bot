@@ -2,26 +2,27 @@
 
 This module handles the display of privacy policy information to users.
 """
+
 import logging
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from capy_discord.config import settings
-
 
 class Privacy(commands.Cog):
     """Privacy policy and data handling information cog."""
+
     def __init__(self, bot: commands.Bot) -> None:
         """Initialize the Privacy cog.
-        
+
         Args:
             bot: The Discord bot instance
         """
         self.bot = bot
         self.log = logging.getLogger(__name__)
         self.log.info("Privacy cog initialized")
-    
+
     @app_commands.command(
         name="privacy",
         description="View our privacy policy and data handling practices",
@@ -97,4 +98,5 @@ class Privacy(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
+    """Set up the Privacy cog."""
     await bot.add_cog(Privacy(bot))
