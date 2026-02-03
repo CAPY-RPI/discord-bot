@@ -30,17 +30,41 @@ class Event(commands.Cog):
         """Manage events based on the action specified."""
         match action.value:
             case "create":
-                await interaction.response.send_message("Create event action")
+                await self.create_event(interaction)
             case "update":
-                await interaction.response.send_message("Update event action")
+                await self.update_event(interaction)
             case "show":
-                await interaction.response.send_message("Show event action")
+                await self.show_event(interaction)
             case "delete":
-                await interaction.response.send_message("Delete event action")
+                await self.delete_event(interaction)
             case "list":
-                await interaction.response.send_message("List events action")
+                await self.list_events(interaction)
             case "announce":
-                await interaction.response.send_message("Announce event action")
+                await self.announce_event(interaction)
+
+    async def create_event(self, interaction: discord.Interaction) -> None:
+        """Handle event creation."""
+        await interaction.response.send_message("Event created successfully.")
+
+    async def update_event(self, interaction: discord.Interaction) -> None:
+        """Handle event updating."""
+        await interaction.response.send_message("Event updated successfully.")
+
+    async def show_event(self, interaction: discord.Interaction) -> None:
+        """Handle showing event details."""
+        await interaction.response.send_message("Event details displayed.")
+
+    async def delete_event(self, interaction: discord.Interaction) -> None:
+        """Handle event deletion."""
+        await interaction.response.send_message("Event deleted successfully.")
+
+    async def list_events(self, interaction: discord.Interaction) -> None:
+        """Handle listing all events."""
+        await interaction.response.send_message("List of events displayed.")
+
+    async def announce_event(self, interaction: discord.Interaction) -> None:
+        """Handle announcing an event."""
+        await interaction.response.send_message("Event announced successfully.")
 
 
 async def setup(bot: commands.Bot) -> None:
