@@ -28,7 +28,7 @@ class Event(commands.Cog):
     @app_commands.choices(
         action=[
             app_commands.Choice(name="create", value="create"),
-            app_commands.Choice(name="update", value="update"),
+            app_commands.Choice(name="edit", value="edit"),
             app_commands.Choice(name="show", value="show"),
             app_commands.Choice(name="delete", value="delete"),
             app_commands.Choice(name="list", value="list"),
@@ -40,8 +40,8 @@ class Event(commands.Cog):
         match action.value:
             case "create":
                 await self.handle_create_action(interaction)
-            case "update":
-                await self.handle_update_action(interaction)
+            case "edit":
+                await self.handle_edit_action(interaction)
             case "show":
                 await self.handle_show_action(interaction)
             case "delete":
@@ -62,9 +62,9 @@ class Event(commands.Cog):
         )
         await interaction.response.send_modal(modal)
 
-    async def handle_update_action(self, interaction: discord.Interaction) -> None:
-        """Handle event updating."""
-        await interaction.response.send_message("Event updated successfully.")
+    async def handle_edit_action(self, interaction: discord.Interaction) -> None:
+        """Handle event editing."""
+        await interaction.response.send_message("Event edited successfully.")
 
     async def handle_show_action(self, interaction: discord.Interaction) -> None:
         """Handle showing event details."""
@@ -103,11 +103,13 @@ class Event(commands.Cog):
         """Helper to build the event display embed."""
         embed = discord.Embed(title=event.event_name, description=event.description)
 
-        event_time = event.event_date
+        event_time = datetime.combine(event.event_date, event.event_time)
         if event_time.tzinfo is None:
-            event_time = event_time.replace(tzinfo=ZoneInfo("UTC"))
+            local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
+            event_time = event_time.replace(tzinfo=local_tz)
 
-        embed.add_field(name="Date/Time", value=event_time.strftime("%Y-%m-%d %I:%M %p %Z"), inline=True)
+        timestamp = int(event_time.timestamp())
+        embed.add_field(name="Date/Time", value=f"<t:{timestamp}:F>", inline=True)
         embed.add_field(name="Location", value=event.location or "TBD", inline=True)
 
         now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
