@@ -1,8 +1,12 @@
 import logging
+from collections.abc import Callable
 from typing import Any, cast
 
 import discord
 from discord import ui
+from pydantic import BaseModel
+
+from capy_discord.ui.forms import ModelModal
 
 
 class BaseView(ui.View):
@@ -74,3 +78,56 @@ class BaseView(ui.View):
             view=self,
         )
         self.message = await interaction.original_response()
+
+
+class ModalLauncherView(BaseView):
+    """Generic view with a configurable button that launches a ModelModal.
+
+    This allows any cog to launch a modal with a customizable button appearance.
+    """
+
+    def __init__(  # noqa: PLR0913
+        self,
+        schema_cls: type[BaseModel],
+        callback: Callable[[discord.Interaction, BaseModel], Any],
+        modal_title: str,
+        *,
+        button_label: str = "Open Form",
+        button_emoji: str | None = None,
+        button_style: discord.ButtonStyle = discord.ButtonStyle.primary,
+        timeout: float | None = 300,
+    ) -> None:
+        """Initialize the ModalLauncherView.
+
+        Args:
+            schema_cls: Pydantic model class for the modal
+            callback: Function to call when modal is submitted
+            modal_title: Title to display on the modal
+            button_label: Text label for the button
+            button_emoji: Optional emoji for the button
+            button_style: Discord button style (primary, secondary, success, danger)
+            timeout: View timeout in seconds
+        """
+        super().__init__(timeout=timeout)
+        self.schema_cls = schema_cls
+        self.callback = callback
+        self.modal_title = modal_title
+
+        # Create and add the button dynamically
+        button = ui.Button(
+            label=button_label,
+            emoji=button_emoji,
+            style=button_style,
+        )
+
+        button.callback = self._button_callback  # type: ignore[method-assign]
+        self.add_item(button)
+
+    async def _button_callback(self, interaction: discord.Interaction) -> None:
+        """Handle button click to open the modal."""
+        modal = ModelModal(
+            model_cls=self.schema_cls,
+            callback=self.callback,
+            title=self.modal_title,
+        )
+        await interaction.response.send_modal(modal)

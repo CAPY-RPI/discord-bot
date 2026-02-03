@@ -1,54 +1,26 @@
 """Base class for ticket-type cogs with reaction-based status tracking."""
 
 import logging
-from collections.abc import Callable
 from typing import Any
 
 import discord
-from discord import TextChannel, ui
+from discord import TextChannel
 from discord.ext import commands
 from pydantic import BaseModel
 
-from capy_discord.ui.forms import ModelModal
-from capy_discord.ui.views import BaseView
-
-
-class FeedbackButtonView(BaseView):
-    """View with button that triggers the feedback modal."""
-
-    def __init__(
-        self,
-        schema_cls: type[BaseModel],
-        callback: Callable[[discord.Interaction, BaseModel], Any],
-        modal_title: str,
-    ) -> None:
-        """Initialize the FeedbackButtonView."""
-        super().__init__(timeout=300)
-        self.schema_cls = schema_cls
-        self.callback = callback
-        self.modal_title = modal_title
-
-    @ui.button(label="Open Survey", style=discord.ButtonStyle.success, emoji="📝")
-    async def open_modal(self, interaction: discord.Interaction, _button: ui.Button) -> None:
-        """Open the modal when button is clicked."""
-        modal = ModelModal(
-            model_cls=self.schema_cls,
-            callback=self.callback,
-            title=self.modal_title,
-        )
-        await interaction.response.send_modal(modal)
+from capy_discord.ui import embeds
+from capy_discord.ui.views import ModalLauncherView
 
 
 class TicketBase(commands.Cog):
     """Base class for ticket submission cogs."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         bot: commands.Bot,
         schema_cls: type[BaseModel],
         status_emoji: dict[str, str],
         command_config: dict[str, Any],
-        color_config: dict[str, Any],
         reaction_footer: str,
     ) -> None:
         """Initialize the TicketBase."""
@@ -56,16 +28,18 @@ class TicketBase(commands.Cog):
         self.schema_cls = schema_cls
         self.status_emoji = status_emoji
         self.command_config = command_config
-        self.color_config = color_config
         self.reaction_footer = reaction_footer
         self.log = logging.getLogger(__name__)
 
     async def _show_feedback_button(self, interaction: discord.Interaction) -> None:
         """Show button that triggers the feedback modal."""
-        view = FeedbackButtonView(
+        view = ModalLauncherView(
             schema_cls=self.schema_cls,
             callback=self._handle_ticket_submit,
             modal_title=self.command_config["cmd_name_verbose"],
+            button_label="Open Survey",
+            button_emoji="📝",
+            button_style=discord.ButtonStyle.success,
         )
         await view.reply(
             interaction,
@@ -119,10 +93,10 @@ class TicketBase(commands.Cog):
         title_value = data.title  # type: ignore[attr-defined]
         description_value = data.description  # type: ignore[attr-defined]
 
-        embed = discord.Embed(
-            title=f"{self.command_config['cmd_emoji']} {self.command_config['cmd_name_verbose']}: {title_value}",
+        embed = embeds.unmarked_embed(
+            title=f"{self.command_config['cmd_name_verbose']}: {title_value}",
             description=description_value,
-            color=self.color_config["unmarked_color"],
+            emoji=self.command_config["cmd_emoji"],
         )
         embed.add_field(name="Submitted by", value=submitter.mention)
 
@@ -217,11 +191,13 @@ class TicketBase(commands.Cog):
         embed = message.embeds[0]
         status = self.status_emoji[emoji]
 
-        # Update color based on status
+        # Update color based on status using standard colors
         if status == "Unmarked":
-            embed.colour = self.color_config["unmarked_color"]
-        else:
-            embed.colour = self.color_config["marked_colors"][status]
+            embed.colour = embeds.STATUS_UNMARKED
+        elif status == "Acknowledged":
+            embed.colour = embeds.STATUS_ACKNOWLEDGED
+        elif status == "Ignored":
+            embed.colour = embeds.STATUS_IGNORED
 
         # Update footer
         embed.set_footer(text=f"Status: {status} | {self.reaction_footer}")
