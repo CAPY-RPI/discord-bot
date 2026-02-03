@@ -1,0 +1,254 @@
+"""Base class for ticket-type cogs with reaction-based status tracking."""
+
+import logging
+from typing import Any
+
+import discord
+from discord import TextChannel, ui
+from discord.ext import commands
+from pydantic import BaseModel
+
+from capy_discord.ui.forms import ModelModal
+from capy_discord.ui.views import BaseView
+
+
+class FeedbackButtonView(BaseView):
+    """View with button that triggers the feedback modal."""
+
+    def __init__(
+        self,
+        schema_cls: type[BaseModel],
+        callback: Any,
+        modal_title: str,
+    ) -> None:
+        """Initialize the FeedbackButtonView."""
+        super().__init__(timeout=300)
+        self.schema_cls = schema_cls
+        self.callback = callback
+        self.modal_title = modal_title
+
+    @ui.button(label="Open Survey", style=discord.ButtonStyle.success, emoji="📝")
+    async def open_modal(self, interaction: discord.Interaction, _button: ui.Button) -> None:
+        """Open the modal when button is clicked."""
+        modal = ModelModal(
+            model_cls=self.schema_cls,
+            callback=self.callback,
+            title=self.modal_title,
+        )
+        await interaction.response.send_modal(modal)
+
+
+class TicketBase(commands.Cog):
+    """Base class for ticket submission cogs."""
+
+    def __init__(
+        self,
+        bot: commands.Bot,
+        schema_cls: type[BaseModel],
+        status_emoji: dict[str, str],
+        command_config: dict[str, Any],
+        color_config: dict[str, Any],
+        reaction_footer: str,
+    ) -> None:
+        """Initialize the TicketBase."""
+        self.bot = bot
+        self.schema_cls = schema_cls
+        self.status_emoji = status_emoji
+        self.command_config = command_config
+        self.color_config = color_config
+        self.reaction_footer = reaction_footer
+        self.log = logging.getLogger(__name__)
+
+    async def _show_feedback_button(self, interaction: discord.Interaction) -> None:
+        """Show button that triggers the feedback modal."""
+        view = FeedbackButtonView(
+            schema_cls=self.schema_cls,
+            callback=self._handle_ticket_submit,
+            modal_title=self.command_config["cmd_name_verbose"],
+        )
+        await view.reply(
+            interaction,
+            content=f"{self.command_config['cmd_emoji']} Ready to submit feedback? Click the button below!",
+            ephemeral=False,
+        )
+
+    async def _validate_and_get_text_channel(
+        self, interaction: discord.Interaction
+    ) -> TextChannel | None:
+        """Validate configured channel and return it if valid."""
+        channel = self.bot.get_channel(self.command_config["request_channel_id"])
+
+        if not channel:
+            self.log.error(
+                "%s channel not found (ID: %s)",
+                self.command_config["cmd_name_verbose"],
+                self.command_config["request_channel_id"],
+            )
+            error_msg = (
+                f"❌ **Configuration Error**\n"
+                f"{self.command_config['cmd_name_verbose']} channel not configured. "
+                f"Please contact an administrator."
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send(error_msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(error_msg, ephemeral=True)
+            return None
+
+        if not isinstance(channel, TextChannel):
+            self.log.error(
+                "%s channel is not a TextChannel (ID: %s)",
+                self.command_config["cmd_name_verbose"],
+                self.command_config["request_channel_id"],
+            )
+            error_msg = (
+                f"❌ **Channel Error**\n"
+                f"The channel for receiving this type of ticket is invalid. "
+                f"Please contact an administrator."
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send(error_msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(error_msg, ephemeral=True)
+            return None
+
+        return channel
+
+    def _build_ticket_embed(
+        self, data: BaseModel, submitter: discord.User | discord.Member
+    ) -> discord.Embed:
+        """Build the ticket embed from validated data."""
+        # Access Pydantic model fields directly
+        title_value = data.title  # type: ignore[attr-defined]
+        description_value = data.description  # type: ignore[attr-defined]
+
+        embed = discord.Embed(
+            title=f"{self.command_config['cmd_emoji']} {self.command_config['cmd_name_verbose']}: {title_value}",
+            description=description_value,
+            color=self.color_config["unmarked_color"],
+        )
+        embed.add_field(name="Submitted by", value=submitter.mention)
+
+        # Build footer with status and reaction options
+        footer_text = "Status: Unmarked | "
+        for emoji, status in self.status_emoji.items():
+            footer_text += f"{emoji} {status} • "
+        footer_text = footer_text.removesuffix(" • ")
+
+        embed.set_footer(text=footer_text)
+        return embed
+
+    async def _handle_ticket_submit(
+        self, interaction: discord.Interaction, validated_data: BaseModel
+    ) -> None:
+        """Handle ticket submission after validation."""
+        # Validate channel
+        channel = await self._validate_and_get_text_channel(interaction)
+        if channel is None:
+            return
+
+        # Build and send embed
+        embed = self._build_ticket_embed(validated_data, interaction.user)
+
+        try:
+            message = await channel.send(embed=embed)
+
+            # Add reaction emojis
+            for emoji in self.status_emoji:
+                await message.add_reaction(emoji)
+
+            # Send success message
+            success_msg = f"✅ {self.command_config['cmd_name_verbose']} submitted successfully!"
+            if interaction.response.is_done():
+                await interaction.followup.send(success_msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(success_msg, ephemeral=True)
+
+            self.log.info(
+                "%s '%s' submitted by user %s (ID: %s)",
+                self.command_config["cmd_name_verbose"],
+                validated_data.title,  # type: ignore[attr-defined]
+                interaction.user,
+                interaction.user.id,
+            )
+
+        except discord.HTTPException as e:
+            self.log.exception("Failed to post ticket to channel: %s", e)
+            error_msg = (
+                f"❌ **Submission Failed**\n"
+                f"Failed to submit {self.command_config['cmd_name_verbose']}. "
+                f"Please try again later."
+            )
+            if interaction.response.is_done():
+                await interaction.followup.send(error_msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(error_msg, ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        """Handle reaction additions for status tracking."""
+        # Only process reactions in the configured channel
+        if payload.channel_id != self.command_config["request_channel_id"]:
+            return
+
+        # Ignore bot's own reactions
+        if payload.user_id == self.bot.user.id:
+            return
+
+        # Fetch channel and message
+        channel = self.bot.get_channel(payload.channel_id)
+        if not isinstance(channel, TextChannel):
+            return
+
+        try:
+            message = await channel.fetch_message(payload.message_id)
+        except discord.NotFound:
+            return
+        except discord.HTTPException as e:
+            self.log.warning("Failed to fetch message for reaction: %s", e)
+            return
+
+        # Validate it's a ticket embed
+        if not message.embeds:
+            return
+
+        title = message.embeds[0].title
+        if not title or not title.startswith(
+            f"{self.command_config['cmd_emoji']} {self.command_config['cmd_name_verbose']}:"
+        ):
+            return
+
+        # Validate emoji is in status_emoji dict
+        emoji = str(payload.emoji)
+        if emoji not in self.status_emoji:
+            return
+
+        # Remove user's reaction (cleanup)
+        if payload.member:
+            try:
+                await message.remove_reaction(payload.emoji, payload.member)
+            except discord.HTTPException as e:
+                self.log.warning("Failed to remove reaction: %s", e)
+
+        # Update embed with new status
+        embed = message.embeds[0]
+        status = self.status_emoji[emoji]
+
+        # Update color based on status
+        if status == "Unmarked":
+            embed.colour = self.color_config["unmarked_color"]
+        else:
+            embed.colour = self.color_config["marked_colors"][status]
+
+        # Update footer
+        embed.set_footer(text=f"Status: {status} | {self.reaction_footer}")
+
+        try:
+            await message.edit(embed=embed)
+            self.log.info(
+                "Updated ticket status to '%s' (Message ID: %s)",
+                status,
+                message.id,
+            )
+        except discord.HTTPException as e:
+            self.log.warning("Failed to update ticket embed: %s", e)

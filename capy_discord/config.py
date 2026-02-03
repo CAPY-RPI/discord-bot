@@ -21,5 +21,8 @@ class Settings(EnvConfig):
     prefix: str = "/"
     token: str = ""
 
+    # Ticket System Configuration
+    ticket_feedback_channel_id: int = 0
+
 
 settings = Settings()
