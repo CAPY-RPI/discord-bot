@@ -1,6 +1,7 @@
 """Base class for ticket-type cogs with reaction-based status tracking."""
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import discord
@@ -18,7 +19,7 @@ class FeedbackButtonView(BaseView):
     def __init__(
         self,
         schema_cls: type[BaseModel],
-        callback: Any,
+        callback: Callable[[discord.Interaction, BaseModel], Any],
         modal_title: str,
     ) -> None:
         """Initialize the FeedbackButtonView."""
@@ -41,7 +42,7 @@ class FeedbackButtonView(BaseView):
 class TicketBase(commands.Cog):
     """Base class for ticket submission cogs."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         bot: commands.Bot,
         schema_cls: type[BaseModel],
@@ -72,9 +73,7 @@ class TicketBase(commands.Cog):
             ephemeral=False,
         )
 
-    async def _validate_and_get_text_channel(
-        self, interaction: discord.Interaction
-    ) -> TextChannel | None:
+    async def _validate_and_get_text_channel(self, interaction: discord.Interaction) -> TextChannel | None:
         """Validate configured channel and return it if valid."""
         channel = self.bot.get_channel(self.command_config["request_channel_id"])
 
@@ -102,9 +101,9 @@ class TicketBase(commands.Cog):
                 self.command_config["request_channel_id"],
             )
             error_msg = (
-                f"❌ **Channel Error**\n"
-                f"The channel for receiving this type of ticket is invalid. "
-                f"Please contact an administrator."
+                "❌ **Channel Error**\n"
+                "The channel for receiving this type of ticket is invalid. "
+                "Please contact an administrator."
             )
             if interaction.response.is_done():
                 await interaction.followup.send(error_msg, ephemeral=True)
@@ -114,9 +113,7 @@ class TicketBase(commands.Cog):
 
         return channel
 
-    def _build_ticket_embed(
-        self, data: BaseModel, submitter: discord.User | discord.Member
-    ) -> discord.Embed:
+    def _build_ticket_embed(self, data: BaseModel, submitter: discord.User | discord.Member) -> discord.Embed:
         """Build the ticket embed from validated data."""
         # Access Pydantic model fields directly
         title_value = data.title  # type: ignore[attr-defined]
@@ -138,9 +135,7 @@ class TicketBase(commands.Cog):
         embed.set_footer(text=footer_text)
         return embed
 
-    async def _handle_ticket_submit(
-        self, interaction: discord.Interaction, validated_data: BaseModel
-    ) -> None:
+    async def _handle_ticket_submit(self, interaction: discord.Interaction, validated_data: BaseModel) -> None:
         """Handle ticket submission after validation."""
         # Validate channel
         channel = await self._validate_and_get_text_channel(interaction)
@@ -172,8 +167,8 @@ class TicketBase(commands.Cog):
                 interaction.user.id,
             )
 
-        except discord.HTTPException as e:
-            self.log.exception("Failed to post ticket to channel: %s", e)
+        except discord.HTTPException:
+            self.log.exception("Failed to post ticket to channel")
             error_msg = (
                 f"❌ **Submission Failed**\n"
                 f"Failed to submit {self.command_config['cmd_name_verbose']}. "
@@ -184,45 +179,33 @@ class TicketBase(commands.Cog):
             else:
                 await interaction.response.send_message(error_msg, ephemeral=True)
 
-    @commands.Cog.listener()
-    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
-        """Handle reaction additions for status tracking."""
+    def _should_process_reaction(self, payload: discord.RawReactionActionEvent) -> bool:
+        """Check if reaction should be processed."""
         # Only process reactions in the configured channel
         if payload.channel_id != self.command_config["request_channel_id"]:
-            return
+            return False
 
         # Ignore bot's own reactions
-        if payload.user_id == self.bot.user.id:
-            return
-
-        # Fetch channel and message
-        channel = self.bot.get_channel(payload.channel_id)
-        if not isinstance(channel, TextChannel):
-            return
-
-        try:
-            message = await channel.fetch_message(payload.message_id)
-        except discord.NotFound:
-            return
-        except discord.HTTPException as e:
-            self.log.warning("Failed to fetch message for reaction: %s", e)
-            return
-
-        # Validate it's a ticket embed
-        if not message.embeds:
-            return
-
-        title = message.embeds[0].title
-        if not title or not title.startswith(
-            f"{self.command_config['cmd_emoji']} {self.command_config['cmd_name_verbose']}:"
-        ):
-            return
+        if self.bot.user and payload.user_id == self.bot.user.id:
+            return False
 
         # Validate emoji is in status_emoji dict
         emoji = str(payload.emoji)
-        if emoji not in self.status_emoji:
-            return
+        return emoji in self.status_emoji
 
+    def _is_ticket_embed(self, message: discord.Message) -> bool:
+        """Check if message is a ticket embed."""
+        if not message.embeds:
+            return False
+
+        title = message.embeds[0].title
+        expected_prefix = f"{self.command_config['cmd_emoji']} {self.command_config['cmd_name_verbose']}:"
+        return bool(title and title.startswith(expected_prefix))
+
+    async def _update_ticket_status(
+        self, message: discord.Message, emoji: str, payload: discord.RawReactionActionEvent
+    ) -> None:
+        """Update ticket embed with new status."""
         # Remove user's reaction (cleanup)
         if payload.member:
             try:
@@ -245,10 +228,33 @@ class TicketBase(commands.Cog):
 
         try:
             await message.edit(embed=embed)
-            self.log.info(
-                "Updated ticket status to '%s' (Message ID: %s)",
-                status,
-                message.id,
-            )
+            self.log.info("Updated ticket status to '%s' (Message ID: %s)", status, message.id)
         except discord.HTTPException as e:
             self.log.warning("Failed to update ticket embed: %s", e)
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent) -> None:
+        """Handle reaction additions for status tracking."""
+        if not self._should_process_reaction(payload):
+            return
+
+        # Fetch channel and message
+        channel = self.bot.get_channel(payload.channel_id)
+        if not isinstance(channel, TextChannel):
+            return
+
+        try:
+            message = await channel.fetch_message(payload.message_id)
+        except discord.NotFound:
+            return
+        except discord.HTTPException as e:
+            self.log.warning("Failed to fetch message for reaction: %s", e)
+            return
+
+        # Validate it's a ticket embed
+        if not self._is_ticket_embed(message):
+            return
+
+        # Update the status
+        emoji = str(payload.emoji)
+        await self._update_ticket_status(message, emoji, payload)
