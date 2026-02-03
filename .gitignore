@@ -220,3 +220,7 @@ __marimo__/
 
 # CAPY
 logs/
+
+# OpenCode
+.sisyphus/
+.opencode/

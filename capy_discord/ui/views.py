@@ -38,7 +38,7 @@ class BaseView(ui.View):
 
         if self.message:
             try:
-                await self.message.edit(view=self, content=f"{self.message.content}\n\n**[Timed Out]**")
+                await self.message.edit(view=self, content=f"{self.message.content or ''}\n\n**[Timed Out]**")
             except discord.NotFound:
                 # Message might have been deleted
                 pass
