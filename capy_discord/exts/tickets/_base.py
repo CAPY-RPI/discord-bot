@@ -8,6 +8,7 @@ from discord import TextChannel
 from discord.ext import commands
 from pydantic import BaseModel
 
+from capy_discord.exts import tickets
 from capy_discord.ui import embeds
 from capy_discord.ui.views import ModalLauncherView
 
@@ -193,11 +194,11 @@ class TicketBase(commands.Cog):
 
         # Update color based on status using standard colors
         if status == "Unmarked":
-            embed.colour = embeds.STATUS_UNMARKED
+            embed.colour = tickets.STATUS_UNMARKED
         elif status == "Acknowledged":
-            embed.colour = embeds.STATUS_ACKNOWLEDGED
+            embed.colour = tickets.STATUS_ACKNOWLEDGED
         elif status == "Ignored":
-            embed.colour = embeds.STATUS_IGNORED
+            embed.colour = tickets.STATUS_IGNORED
 
         # Update footer
         embed.set_footer(text=f"Status: {status} | {self.reaction_footer}")

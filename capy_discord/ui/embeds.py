@@ -2,10 +2,7 @@
 
 import discord
 
-# Standard colors for different embed types
-STATUS_UNMARKED = discord.Color.blue()
-STATUS_ACKNOWLEDGED = discord.Color.green()
-STATUS_IGNORED = discord.Color.greyple()
+from capy_discord.exts import tickets
 
 
 def unmarked_embed(
@@ -28,7 +25,7 @@ def unmarked_embed(
     return discord.Embed(
         title=full_title,
         description=description,
-        color=STATUS_UNMARKED,
+        color=tickets.STATUS_UNMARKED,
     )
 
 
@@ -52,7 +49,7 @@ def success_embed(
     return discord.Embed(
         title=full_title,
         description=description,
-        color=STATUS_ACKNOWLEDGED,
+        color=tickets.STATUS_ACKNOWLEDGED,
     )
 
 
@@ -76,5 +73,5 @@ def ignored_embed(
     return discord.Embed(
         title=full_title,
         description=description,
-        color=STATUS_IGNORED,
+        color=tickets.STATUS_IGNORED,
     )
