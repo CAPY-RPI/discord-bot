@@ -123,10 +123,18 @@ class TicketBase(commands.Cog):
 
     async def _handle_ticket_submit(self, interaction: discord.Interaction, validated_data: TicketSchema) -> None:
         """Handle ticket submission after validation."""
-        # Validate channel
+        # Validate channel first (fast operation, no need to defer yet)
         channel = await self._validate_and_get_text_channel(interaction)
         if channel is None:
             return
+
+        # Send explicit loading message to ensure visibility
+        # We do this AFTER validation so we don't get stuck with a "Submitting..." message if validation fails
+        loading_emb = embeds.loading_embed(
+            title="Submitting Request",
+            description="Please wait while we process your submission...",
+        )
+        await interaction.response.send_message(embed=loading_emb, ephemeral=True)
 
         # Build and send embed
         embed = self._build_ticket_embed(validated_data, interaction.user)
@@ -140,12 +148,12 @@ class TicketBase(commands.Cog):
                 return_exceptions=True,
             )
 
-            # Send success message
-            success_msg = f"✅ {self.command_config['cmd_name_verbose']} submitted successfully!"
-            if interaction.response.is_done():
-                await interaction.followup.send(success_msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(success_msg, ephemeral=True)
+            # Success: Edit the loading message to success embed
+            success_emb = embeds.success_embed(
+                title="Submission Successful",
+                description=f"{self.command_config['cmd_name_verbose']} submitted successfully.",
+            )
+            await interaction.edit_original_response(embed=success_emb)
 
             self.log.info(
                 "%s '%s' submitted by user %s (ID: %s)",
@@ -157,15 +165,12 @@ class TicketBase(commands.Cog):
 
         except discord.HTTPException:
             self.log.exception("Failed to post ticket to channel")
-            error_msg = (
-                f"❌ **Submission Failed**\n"
-                f"Failed to submit {self.command_config['cmd_name_verbose']}. "
-                f"Please try again later."
+            # Failure: Edit the loading message to error embed
+            error_emb = embeds.error_embed(
+                title="Submission Failed",
+                description=f"Failed to submit {self.command_config['cmd_name_verbose']}. Please try again later.",
             )
-            if interaction.response.is_done():
-                await interaction.followup.send(error_msg, ephemeral=True)
-            else:
-                await interaction.response.send_message(error_msg, ephemeral=True)
+            await interaction.edit_original_response(embed=error_emb)
 
     def _should_process_reaction(self, payload: discord.RawReactionActionEvent) -> bool:
         """Check if reaction should be processed."""
