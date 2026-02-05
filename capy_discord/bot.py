@@ -18,7 +18,9 @@ class Bot(commands.AutoShardedBot):
         self.tree.on_error = self.on_tree_error  # type: ignore
         await self.load_extensions()
 
-    def _get_logger_for_command(self, command: app_commands.Command | commands.Command | None) -> logging.Logger:
+    def _get_logger_for_command(
+        self, command: app_commands.Command | app_commands.ContextMenu | commands.Command | None
+    ) -> logging.Logger:
         if command and hasattr(command, "module") and command.module:
             return logging.getLogger(command.module)
         return self.log
