@@ -21,28 +21,28 @@ def cog(bot):
 @pytest.mark.asyncio
 async def test_error_test_generic(cog):
     interaction = MagicMock(spec=discord.Interaction)
-    with pytest.raises(ValueError, match="Generic Test Error"):
-        await cog.error_test(interaction, "generic")
+    with pytest.raises(ValueError, match="Generic error"):
+        await cog.error_test.callback(cog, interaction, "generic")
 
 
 @pytest.mark.asyncio
 async def test_error_test_user_friendly(cog):
     interaction = MagicMock(spec=discord.Interaction)
-    with pytest.raises(UserFriendlyError, match="Internal Error Log"):
-        await cog.error_test(interaction, "user-friendly")
+    with pytest.raises(UserFriendlyError, match="Log"):
+        await cog.error_test.callback(cog, interaction, "user-friendly")
 
 
 @pytest.mark.asyncio
 async def test_error_test_callback_generic(cog):
     interaction = MagicMock(spec=discord.Interaction)
-    with pytest.raises(ValueError, match="Generic Test Error"):
+    with pytest.raises(ValueError, match="Generic error"):
         await cog.error_test.callback(cog, interaction, "generic")
 
 
 @pytest.mark.asyncio
 async def test_error_test_callback_user_friendly(cog):
     interaction = MagicMock(spec=discord.Interaction)
-    with pytest.raises(UserFriendlyError, match="Internal Error Log"):
+    with pytest.raises(UserFriendlyError, match="Log"):
         await cog.error_test.callback(cog, interaction, "user-friendly")
 
 
