@@ -3,7 +3,19 @@
 from pydantic import BaseModel, Field
 
 
-class FeedbackForm(BaseModel):
+class TicketSchema(BaseModel):
+    """Base schema for all ticket forms.
+
+    Provides a typed contract ensuring all ticket cogs have:
+    - title: Brief summary field
+    - description: Detailed description field
+    """
+
+    title: str
+    description: str
+
+
+class FeedbackForm(TicketSchema):
     """Schema for feedback submission form."""
 
     title: str = Field(

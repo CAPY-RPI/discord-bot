@@ -1,14 +1,15 @@
 """Base class for ticket-type cogs with reaction-based status tracking."""
 
+import asyncio
 import logging
 from typing import Any
 
 import discord
 from discord import TextChannel
 from discord.ext import commands
-from pydantic import BaseModel
 
 from capy_discord.exts import tickets
+from capy_discord.exts.tickets._schemas import TicketSchema
 from capy_discord.ui import embeds
 from capy_discord.ui.forms import ModelModal
 from capy_discord.ui.views import ModalLauncherView
@@ -20,7 +21,7 @@ class TicketBase(commands.Cog):
     def __init__(
         self,
         bot: commands.Bot,
-        schema_cls: type[BaseModel],
+        schema_cls: type[TicketSchema],
         status_emoji: dict[str, str],
         command_config: dict[str, Any],
         reaction_footer: str,
@@ -98,11 +99,11 @@ class TicketBase(commands.Cog):
 
         return channel
 
-    def _build_ticket_embed(self, data: BaseModel, submitter: discord.User | discord.Member) -> discord.Embed:
+    def _build_ticket_embed(self, data: TicketSchema, submitter: discord.User | discord.Member) -> discord.Embed:
         """Build the ticket embed from validated data."""
-        # Access Pydantic model fields directly
-        title_value = data.title  # type: ignore[attr-defined]
-        description_value = data.description  # type: ignore[attr-defined]
+        # Access typed TicketSchema fields
+        title_value = data.title
+        description_value = data.description
 
         embed = embeds.unmarked_embed(
             title=f"{self.command_config['cmd_name_verbose']}: {title_value}",
@@ -120,7 +121,7 @@ class TicketBase(commands.Cog):
         embed.set_footer(text=footer_text)
         return embed
 
-    async def _handle_ticket_submit(self, interaction: discord.Interaction, validated_data: BaseModel) -> None:
+    async def _handle_ticket_submit(self, interaction: discord.Interaction, validated_data: TicketSchema) -> None:
         """Handle ticket submission after validation."""
         # Validate channel
         channel = await self._validate_and_get_text_channel(interaction)
@@ -133,9 +134,11 @@ class TicketBase(commands.Cog):
         try:
             message = await channel.send(embed=embed)
 
-            # Add reaction emojis
-            for emoji in self.status_emoji:
-                await message.add_reaction(emoji)
+            # Add reaction emojis in parallel to reduce "dead zone"
+            await asyncio.gather(
+                *[message.add_reaction(emoji) for emoji in self.status_emoji],
+                return_exceptions=True,
+            )
 
             # Send success message
             success_msg = f"✅ {self.command_config['cmd_name_verbose']} submitted successfully!"
@@ -147,7 +150,7 @@ class TicketBase(commands.Cog):
             self.log.info(
                 "%s '%s' submitted by user %s (ID: %s)",
                 self.command_config["cmd_name_verbose"],
-                validated_data.title,  # type: ignore[attr-defined]
+                validated_data.title,
                 interaction.user,
                 interaction.user.id,
             )

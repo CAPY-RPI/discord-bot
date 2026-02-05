@@ -1,12 +1,14 @@
 import logging
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 import discord
 from discord import ui
 from pydantic import BaseModel
 
 from capy_discord.ui.forms import ModelModal
+
+T = TypeVar("T", bound=BaseModel)
 
 
 class BaseView(ui.View):
@@ -80,7 +82,7 @@ class BaseView(ui.View):
         self.message = await interaction.original_response()
 
 
-class ModalLauncherView(BaseView):
+class ModalLauncherView[T: BaseModel](BaseView):
     """Generic view with a configurable button that launches a ModelModal.
 
     This allows any cog to launch a modal with a customizable button appearance.
@@ -88,8 +90,8 @@ class ModalLauncherView(BaseView):
 
     def __init__(  # noqa: PLR0913
         self,
-        schema_cls: type[BaseModel],
-        callback: Callable[[discord.Interaction, BaseModel], Any],
+        schema_cls: type[T],
+        callback: Callable[[discord.Interaction, T], Any],
         modal_title: str,
         *,
         button_label: str = "Open Form",
