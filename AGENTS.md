@@ -136,7 +136,7 @@ Format: `<type>(<scope>): <subject>`
 ## 7. Cog Standards
 
 ### Initialization
-All Cogs **MUST** accept the `bot` instance in `__init__`.
+All Cogs **MUST** accept the `bot` instance in `__init__`. The use of the global `capy_discord.instance` is **deprecated** and should not be used in new code.
 
 ```python
 class MyCog(commands.Cog):
