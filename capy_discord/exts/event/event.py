@@ -66,6 +66,31 @@ class EventDropdownView(BaseView):
         self.add_item(EventDropdownSelect(options=options, view=self, placeholder=placeholder))
 
 
+class ConfirmDeleteView(BaseView):
+    """View to confirm event deletion."""
+
+    def __init__(self) -> None:
+        """Initialize the ConfirmDeleteView."""
+        super().__init__(timeout=60)
+        self.value: bool | None = None
+
+    @ui.button(label="Delete", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, _button: ui.Button) -> None:
+        """Button to confirm deletion."""
+        self.value = True
+        self.disable_all_items()
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+    @ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, _button: ui.Button) -> None:
+        """Button to cancel deletion."""
+        self.value = False
+        self.disable_all_items()
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+
 class Event(commands.Cog):
     """Cog for event-related commands."""
 
@@ -188,14 +213,30 @@ class Event(commands.Cog):
 
         await view.wait()
 
-    async def _on_show_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
-        """Handle event selection for showing details."""
-        embed = self._create_event_embed(selected_event)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
     async def handle_delete_action(self, interaction: discord.Interaction) -> None:
         """Handle event deletion."""
-        await interaction.response.send_message("Event deleted successfully.")
+        guild_id = interaction.guild_id
+        if not guild_id:
+            embed = error_embed("No Server", "Events must be deleted in a server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # [DB CALL]: Fetch guild events
+        events = self.events.get(guild_id, [])
+
+        if not events:
+            embed = error_embed("No Events", "No events found in this server to delete.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        self.log.info("Opening event selection for deletion in guild %s", guild_id)
+
+        await interaction.response.defer(ephemeral=True)
+
+        view = EventDropdownView(events, self, "Select an event to delete", self._on_delete_select)
+        await interaction.followup.send(content="Select an event to delete:", view=view, ephemeral=True)
+
+        await view.wait()
 
     async def handle_list_action(self, interaction: discord.Interaction) -> None:
         """Handle listing all events."""
@@ -260,6 +301,35 @@ class Event(commands.Cog):
         embed = self._create_event_embed(updated_event)
         success = success_embed("Event Updated", "Your event has been updated successfully!")
         await interaction.response.send_message(embeds=[success, embed], ephemeral=True)
+
+    async def _on_show_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
+        """Handle event selection for showing details."""
+        embed = self._create_event_embed(selected_event)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def _on_delete_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
+        """Handle event selection for deletion."""
+        view = ConfirmDeleteView()
+        embed = discord.Embed(
+            title="Confirm Deletion",
+            description=f"Are you sure you want to delete **{selected_event.event_name}**?",
+            color=discord.Color.red(),
+        )
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+        await view.wait()
+
+        if view.value is True:
+            # [DB CALL]: Delete event from guild
+            guild_id = interaction.guild_id
+            if guild_id:
+                guild_events = self.events.setdefault(guild_id, [])
+                if selected_event in guild_events:
+                    guild_events.remove(selected_event)
+                    self.log.info("Deleted event '%s' from guild %s", selected_event.event_name, guild_id)
+
+            success = success_embed("Event Deleted", "The event has been deleted successfully!")
+            await interaction.followup.send(embed=success, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
