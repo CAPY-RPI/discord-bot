@@ -11,11 +11,11 @@ STATUS_UNMARKED = discord.Color.light_grey()
 STATUS_IGNORED = discord.Color.greyple()
 
 
-def error_embed(title: str, description: str) -> discord.Embed:
+def error_embed(title: str = "❌ Error", description: str = "") -> discord.Embed:
     """Create an error status embed.
 
     Args:
-        title: The title of the embed.
+        title: The title of the embed. Defaults to "❌ Error".
         description: The description of the embed.
 
     Returns:

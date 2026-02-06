@@ -1,8 +1,11 @@
 import logging
-from typing import Any, cast
+from typing import cast
 
 import discord
 from discord import ui
+from discord.utils import MISSING
+
+from capy_discord.ui.embeds import error_embed
 
 
 class BaseView(ui.View):
@@ -24,12 +27,12 @@ class BaseView(ui.View):
         """Handle errors raised in view items."""
         self.log.error("Error in view %s item %s: %s", self, item, error, exc_info=error)
 
-        err_msg = "❌ **Something went wrong!**\nThe error has been logged for the developers."
+        embed = error_embed(description="Something went wrong!\nThe error has been logged for the developers.")
 
         if interaction.response.is_done():
-            await interaction.followup.send(err_msg, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         else:
-            await interaction.response.send_message(err_msg, ephemeral=True)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def on_timeout(self) -> None:
         """Disable all items and update the message on timeout."""
@@ -49,18 +52,18 @@ class BaseView(ui.View):
         """Disable all interactive items in the view."""
         for item in self.children:
             if hasattr(item, "disabled"):
-                cast("Any", item).disabled = True
+                cast("ui.Button | ui.Select", item).disabled = True
 
     async def reply(  # noqa: PLR0913
         self,
         interaction: discord.Interaction,
         content: str | None = None,
-        embed: discord.Embed | None = None,
-        embeds: list[discord.Embed] = discord.utils.MISSING,
-        file: discord.File = discord.utils.MISSING,
-        files: list[discord.File] = discord.utils.MISSING,
+        embed: discord.Embed = MISSING,
+        embeds: list[discord.Embed] = MISSING,
+        file: discord.File = MISSING,
+        files: list[discord.File] = MISSING,
         ephemeral: bool = False,
-        allowed_mentions: discord.AllowedMentions = discord.utils.MISSING,
+        allowed_mentions: discord.AllowedMentions = MISSING,
     ) -> None:
         """Send a message with this view and automatically track the message."""
         await interaction.response.send_message(
