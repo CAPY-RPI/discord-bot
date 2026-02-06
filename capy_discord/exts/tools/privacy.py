@@ -107,6 +107,7 @@ class Privacy(commands.Cog):
         )
 
         embed.set_footer(text=FOOTER_TEXT)
+        self.log.info("/privacy invoked user: %s guild: %s", interaction.user.id, interaction.guild_id)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
