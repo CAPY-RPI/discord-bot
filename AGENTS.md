@@ -100,12 +100,25 @@ We use a global `on_tree_error` handler in `bot.py`.
 *   Exceptions are logged with the specific module name.
 *   Do not wrap every command in `try/except` blocks unless handling specific business logic errors.
 
-## 5. Time and Timezones
+## 5. Logging
+All logs follow a standardized format for consistency across the console and log files.
+
+*   **Format**: `[{asctime}] [{levelname:<8}] {name}: {message}`
+*   **Date Format**: `%Y-%m-%d %H:%M:%S`
+*   **Usage**: Always use `logging.getLogger(__name__)` to ensure logs are attributed to the correct module.
+
+```python
+import logging
+self.log = logging.getLogger(__name__)
+self.log.info("Starting feature X")
+```
+
+## 6. Time and Timezones
 **Always use `zoneinfo.ZoneInfo`**.
 *   **Storage**: `UTC`.
 *   **Usage**: `datetime.now(ZoneInfo("UTC"))`.
 
-## 6. Development Workflow
+## 7. Development Workflow
 
 ### Linear & Branching
 *   **Issue Tracking**: Every task must have a Linear issue.
@@ -133,7 +146,7 @@ Format: `<type>(<scope>): <subject>`
 2.  **Reviewers**: Must include `Shamik` and `Jason`.
 3.  **Checks**: All CI checks (Lint, Test, Build) must pass.
 
-## 7. Cog Standards
+## 8. Cog Standards
 
 ### Initialization
 All Cogs **MUST** accept the `bot` instance in `__init__`. The use of the global `capy_discord.instance` is **deprecated** and should not be used in new code.
