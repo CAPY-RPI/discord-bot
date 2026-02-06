@@ -49,4 +49,4 @@ class CallbackModal[T: "CallbackModal"](BaseModal):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         """Delegate submission to the callback."""
         if self.submission_callback:
-            await self.submission_callback(interaction, self)  # type: ignore
+            await self.submission_callback(interaction, self)

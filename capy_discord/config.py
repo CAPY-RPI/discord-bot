@@ -20,6 +20,7 @@ class Settings(EnvConfig):
     log_level: int = logging.INFO
     prefix: str = "/"
     token: str = ""
+    debug_guild_id: int | None = None
 
 
 settings = Settings()
