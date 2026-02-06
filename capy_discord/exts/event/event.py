@@ -1,5 +1,7 @@
 import logging
+from collections.abc import Callable, Coroutine
 from datetime import datetime
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import discord
@@ -13,55 +15,55 @@ from capy_discord.ui.views import BaseView
 from ._schemas import EventSchema
 
 
-class EventSelectView(BaseView):
-    """View to select an event from a dropdown."""
+class EventDropdownSelect(ui.Select["EventDropdownView"]):
+    """Generic select component for event selection with customizable callback."""
 
-    def __init__(self, events: list[EventSchema], cog: "Event") -> None:
-        """Initialize the EventSelectView."""
+    def __init__(
+        self,
+        options: list[discord.SelectOption],
+        view: "EventDropdownView",
+        placeholder: str,
+    ) -> None:
+        """Initialize the select."""
+        super().__init__(placeholder=placeholder, options=options)
+        self.view_ref = view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        """Handle selection by delegating to view's callback."""
+        event_idx = int(self.values[0])
+        selected_event = self.view_ref.event_list[event_idx]
+        await self.view_ref.on_select(interaction, selected_event)
+        self.view_ref.stop()
+
+
+class EventDropdownView(BaseView):
+    """Generic view for event selection with customizable callback."""
+
+    def __init__(
+        self,
+        events: list[EventSchema],
+        cog: "Event",
+        placeholder: str,
+        on_select_callback: Callable[[discord.Interaction, EventSchema], Coroutine[Any, Any, None]],
+    ) -> None:
+        """Initialize the EventDropdownView.
+
+        Args:
+            events: List of events to select from.
+            cog: Reference to the Event cog.
+            placeholder: Placeholder text for the dropdown.
+            on_select_callback: Async callback to handle selection.
+        """
         super().__init__(timeout=60)
         self.event_list = events
         self.cog = cog
+        self.on_select = on_select_callback
 
         if not events:
             return
 
         options = [discord.SelectOption(label=event.event_name[:100], value=str(i)) for i, event in enumerate(events)]
-        self.add_item(EventSelect(options=options, view=self))
-
-
-class EventSelect(ui.Select["EventSelectView"]):
-    """Select component for event selection."""
-
-    def __init__(self, options: list[discord.SelectOption], view: "EventSelectView") -> None:
-        """Initialize the select."""
-        super().__init__(placeholder="Select an event to edit", options=options)
-        self.view_ref = view
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        """Handle selection."""
-        event_idx = int(self.values[0])
-        selected_event = self.view_ref.event_list[event_idx]
-
-        initial_data = {
-            "event_name": selected_event.event_name,
-            "event_date": selected_event.event_date.strftime("%m-%d-%Y"),
-            "event_time": selected_event.event_time.strftime("%H:%M"),
-            "location": selected_event.location,
-            "description": selected_event.description,
-        }
-
-        self.view_ref.cog.log.info("Opening edit modal for event '%s'", selected_event.event_name)
-
-        modal = ModelModal(
-            model_cls=EventSchema,
-            callback=lambda modal_interaction, event: self.view_ref.cog._handle_event_update(
-                modal_interaction, event, selected_event
-            ),
-            title="Edit Event",
-            initial_data=initial_data,
-        )
-        await interaction.response.send_modal(modal)
-        self.view_ref.stop()
+        self.add_item(EventDropdownSelect(options=options, view=self, placeholder=placeholder))
 
 
 class Event(commands.Cog):
@@ -134,14 +136,62 @@ class Event(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
 
-        view = EventSelectView(events, self)
+        view = EventDropdownView(events, self, "Select an event to edit", self._on_edit_select)
         await interaction.followup.send(content="Select an event to edit:", view=view, ephemeral=True)
 
         await view.wait()
 
+    async def _on_edit_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
+        """Handle event selection for editing."""
+        initial_data = {
+            "event_name": selected_event.event_name,
+            "event_date": selected_event.event_date.strftime("%m-%d-%Y"),
+            "event_time": selected_event.event_time.strftime("%H:%M"),
+            "location": selected_event.location,
+            "description": selected_event.description,
+        }
+
+        self.log.info("Opening edit modal for event '%s'", selected_event.event_name)
+
+        modal = ModelModal(
+            model_cls=EventSchema,
+            callback=lambda modal_interaction, event: self._handle_event_update(
+                modal_interaction, event, selected_event
+            ),
+            title="Edit Event",
+            initial_data=initial_data,
+        )
+        await interaction.response.send_modal(modal)
+
     async def handle_show_action(self, interaction: discord.Interaction) -> None:
         """Handle showing event details."""
-        await interaction.response.send_message("Event details displayed.")
+        guild_id = interaction.guild_id
+        if not guild_id:
+            embed = error_embed("No Server", "Events must be viewed in a server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # [DB CALL]: Fetch guild events
+        events = self.events.get(guild_id, [])
+
+        if not events:
+            embed = error_embed("No Events", "No events found in this server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        self.log.info("Opening event selection for viewing in guild %s", guild_id)
+
+        await interaction.response.defer(ephemeral=True)
+
+        view = EventDropdownView(events, self, "Select an event to view", self._on_show_select)
+        await interaction.followup.send(content="Select an event to view:", view=view, ephemeral=True)
+
+        await view.wait()
+
+    async def _on_show_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
+        """Handle event selection for showing details."""
+        embed = self._create_event_embed(selected_event)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def handle_delete_action(self, interaction: discord.Interaction) -> None:
         """Handle event deletion."""
