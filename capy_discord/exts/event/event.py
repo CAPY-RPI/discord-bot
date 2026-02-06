@@ -240,7 +240,81 @@ class Event(commands.Cog):
 
     async def handle_list_action(self, interaction: discord.Interaction) -> None:
         """Handle listing all events."""
-        await interaction.response.send_message("List of events displayed.")
+        guild_id = interaction.guild_id
+        if not guild_id:
+            embed = error_embed("No Server", "Events must be listed in a server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # [DB CALL]: Fetch guild events
+        events = self.events.get(guild_id, [])
+
+        if not events:
+            embed = error_embed("No Events", "No events found in this server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        self.log.info("Listing events for guild %s", guild_id)
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Separate into upcoming and past events
+        now = datetime.now().astimezone()
+        upcoming_events: list[EventSchema] = []
+        past_events: list[EventSchema] = []
+
+        for event in events:
+            event_time = datetime.combine(event.event_date, event.event_time)
+            if event_time.tzinfo is None:
+                local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
+                event_time = event_time.replace(tzinfo=local_tz)
+
+            if event_time >= now:
+                upcoming_events.append(event)
+            else:
+                past_events.append(event)
+
+        # Sort events
+        upcoming_events.sort(key=lambda e: datetime.combine(e.event_date, e.event_time))
+        past_events.sort(key=lambda e: datetime.combine(e.event_date, e.event_time), reverse=True)
+
+        # Build embed
+        total_count = len(upcoming_events) + len(past_events)
+        embed = discord.Embed(
+            title="Events",
+            description=(f"Found {total_count} events (Upcoming: {len(upcoming_events)}, Past: {len(past_events)})"),
+            color=discord.Color.blue(),
+        )
+
+        # Add upcoming events
+        for event in upcoming_events:
+            event_time = datetime.combine(event.event_date, event.event_time)
+            if event_time.tzinfo is None:
+                local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
+                event_time = event_time.replace(tzinfo=local_tz)
+
+            timestamp = int(event_time.timestamp())
+            embed.add_field(
+                name=event.event_name,
+                value=f"**When:** <t:{timestamp}:F>\n**Where:** {event.location or 'TBD'}",
+                inline=False,
+            )
+
+        # Add past events with [OLD] prefix
+        for event in past_events:
+            event_time = datetime.combine(event.event_date, event.event_time)
+            if event_time.tzinfo is None:
+                local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
+                event_time = event_time.replace(tzinfo=local_tz)
+
+            timestamp = int(event_time.timestamp())
+            embed.add_field(
+                name=f"[OLD] {event.event_name}",
+                value=f"**When:** <t:{timestamp}:F>\n**Where:** {event.location or 'TBD'}",
+                inline=False,
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def handle_announce_action(self, interaction: discord.Interaction) -> None:
         """Handle announcing an event."""
