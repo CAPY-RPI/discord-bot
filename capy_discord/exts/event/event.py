@@ -101,6 +101,8 @@ class Event(commands.Cog):
         self.log.info("Event cog initialized")
         # In-memory storage for demonstration.
         self.events: dict[int, list[EventSchema]] = {}
+        # Track announcement messages: guild_id -> {event_name: message_id}
+        self.event_announcements: dict[int, dict[str, int]] = {}
 
     @app_commands.command(name="event", description="Manage events")
     @app_commands.describe(action="The action to perform with events")
@@ -112,6 +114,7 @@ class Event(commands.Cog):
             app_commands.Choice(name="delete", value="delete"),
             app_commands.Choice(name="list", value="list"),
             app_commands.Choice(name="announce", value="announce"),
+            app_commands.Choice(name="myevents", value="myevents"),
         ]
     )
     async def event(self, interaction: discord.Interaction, action: app_commands.Choice[str]) -> None:
@@ -129,6 +132,8 @@ class Event(commands.Cog):
                 await self.handle_list_action(interaction)
             case "announce":
                 await self.handle_announce_action(interaction)
+            case "myevents":
+                await self.handle_myevents_action(interaction)
 
     async def handle_create_action(self, interaction: discord.Interaction) -> None:
         """Handle event creation."""
@@ -165,28 +170,6 @@ class Event(commands.Cog):
         await interaction.followup.send(content="Select an event to edit:", view=view, ephemeral=True)
 
         await view.wait()
-
-    async def _on_edit_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
-        """Handle event selection for editing."""
-        initial_data = {
-            "event_name": selected_event.event_name,
-            "event_date": selected_event.event_date.strftime("%m-%d-%Y"),
-            "event_time": selected_event.event_time.strftime("%H:%M"),
-            "location": selected_event.location,
-            "description": selected_event.description,
-        }
-
-        self.log.info("Opening edit modal for event '%s'", selected_event.event_name)
-
-        modal = ModelModal(
-            model_cls=EventSchema,
-            callback=lambda modal_interaction, event: self._handle_event_update(
-                modal_interaction, event, selected_event
-            ),
-            title="Edit Event",
-            initial_data=initial_data,
-        )
-        await interaction.response.send_modal(modal)
 
     async def handle_show_action(self, interaction: discord.Interaction) -> None:
         """Handle showing event details."""
@@ -341,6 +324,144 @@ class Event(commands.Cog):
 
         await view.wait()
 
+    async def handle_myevents_action(self, interaction: discord.Interaction) -> None:
+        """Handle showing events the user has registered for via RSVP."""
+        guild_id = interaction.guild_id
+        guild = interaction.guild
+        if not guild_id or not guild:
+            embed = error_embed("No Server", "Events must be viewed in a server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # [DB CALL]: Fetch guild events
+        events = self.events.get(guild_id, [])
+
+        if not events:
+            embed = error_embed("No Events", "No events found in this server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        self.log.info("Listing registered events for user %s", interaction.user)
+
+        await interaction.response.defer(ephemeral=True)
+
+        # Get upcoming events the user has registered for
+        now = datetime.now().astimezone()
+        registered_events: list[EventSchema] = []
+
+        for event in events:
+            event_time = datetime.combine(event.event_date, event.event_time)
+            if event_time.tzinfo is None:
+                local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
+                event_time = event_time.replace(tzinfo=local_tz)
+
+            # Only include upcoming events
+            if event_time < now:
+                continue
+
+            # Check if user has registered for this event
+            if await self._is_user_registered(event, guild, interaction.user):
+                registered_events.append(event)
+
+        registered_events.sort(key=lambda e: datetime.combine(e.event_date, e.event_time))
+
+        # Build embed
+        embed = discord.Embed(
+            title="Your Registered Events",
+            description="Events you have registered for by reacting with ✅",
+            color=discord.Color.purple(),
+        )
+
+        if not registered_events:
+            embed.description = (
+                "You haven't registered for any upcoming events.\nReact to event announcements with ✅ to register!"
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        # Add registered events
+        for event in registered_events:
+            event_time = datetime.combine(event.event_date, event.event_time)
+            if event_time.tzinfo is None:
+                local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
+                event_time = event_time.replace(tzinfo=local_tz)
+
+            timestamp = int(event_time.timestamp())
+            embed.add_field(
+                name=event.event_name,
+                value=f"**When:** <t:{timestamp}:F>\n**Where:** {event.location or 'TBD'}",
+                inline=False,
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _is_user_registered(
+        self, event: EventSchema, guild: discord.Guild, user: discord.User | discord.Member
+    ) -> bool:
+        """Check if a user has registered for an event via RSVP reaction.
+
+        Args:
+            event: The event to check registration for.
+            guild: The guild where the event was announced.
+            user: The user to check registration for.
+
+        Returns:
+            True if the user has reacted with ✅ to the event announcement, False otherwise.
+        """
+        # Get announcement messages for this guild
+        guild_announcements = self.event_announcements.get(guild.id, {})
+        message_id = guild_announcements.get(event.event_name)
+
+        if not message_id:
+            return False
+
+        # Try to find the announcement message and check reactions
+        announcement_channel: discord.TextChannel | None = None
+        for channel in guild.text_channels:
+            if "announce" in channel.name.lower():
+                announcement_channel = channel
+                break
+
+        if not announcement_channel:
+            return False
+
+        try:
+            message = await announcement_channel.fetch_message(message_id)
+            # Check if user reacted with ✅
+            for reaction in message.reactions:
+                if str(reaction.emoji) == "✅":
+                    users = [user async for user in reaction.users()]
+                    if user in users:
+                        return True
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            # Message not found or no permission - skip this event
+            self.log.warning("Could not fetch announcement message %s", message_id)
+            return False
+
+        return False
+
+    async def _on_edit_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
+        """Handle event selection for editing."""
+        initial_data = {
+            "event_name": selected_event.event_name,
+            "event_date": selected_event.event_date.strftime("%m-%d-%Y"),
+            "event_time": selected_event.event_time.strftime("%H:%M"),
+            "location": selected_event.location,
+            "description": selected_event.description,
+        }
+
+        self.log.info("Opening edit modal for event '%s'", selected_event.event_name)
+
+        modal = ModelModal(
+            model_cls=EventSchema,
+            callback=lambda modal_interaction, event: self._handle_event_update(
+                modal_interaction, event, selected_event
+            ),
+            title="Edit Event",
+            initial_data=initial_data,
+        )
+        await interaction.response.send_modal(modal)
+
     async def _on_announce_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
         """Handle event selection for announcement."""
         guild = interaction.guild
@@ -384,6 +505,11 @@ class Event(commands.Cog):
             # Add RSVP reactions
             await message.add_reaction("✅")  # Attending
             await message.add_reaction("❌")  # Not attending
+
+            # [DB CALL]: Store announcement message ID for RSVP tracking
+            if guild.id not in self.event_announcements:
+                self.event_announcements[guild.id] = {}
+            self.event_announcements[guild.id][selected_event.event_name] = message.id
 
             self.log.info(
                 "Announced event '%s' to guild %s in channel %s",
