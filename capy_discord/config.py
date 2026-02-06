@@ -20,6 +20,7 @@ class Settings(EnvConfig):
     log_level: int = logging.INFO
     prefix: str = "/"
     token: str = ""
+    debug_guild_id: int | None = None
 
     # Ticket System Configuration
     ticket_feedback_channel_id: int = 0
