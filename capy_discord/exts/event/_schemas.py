@@ -10,13 +10,11 @@ class EventSchema(BaseModel):
     event_date: date = Field(
         title="Event Date",
         description="Date of the event (MM-DD-YYYY)",
-        pattern=r"^(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])-\d{4}$",
         default_factory=date.today,
     )
     event_time: time = Field(
         title="Event Time",
         description="Time of the event (HH:MM, 24-hour) or (HH:MM AM/PM)",
-        pattern=r"^(0[0-9]|1[0-9]|2[0-3]):([0-5][0-9])(\s?(AM|PM))?$",
         default_factory=lambda: datetime.now().astimezone().time(),
     )
     location: str = Field(title="Location", description="Location of the event", max_length=200, default="")

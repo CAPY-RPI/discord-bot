@@ -3,13 +3,65 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import discord
-from discord import app_commands
+from discord import app_commands, ui
 from discord.ext import commands
 
 from capy_discord.ui.embeds import error_embed, success_embed
 from capy_discord.ui.forms import ModelModal
+from capy_discord.ui.views import BaseView
 
 from ._schemas import EventSchema
+
+
+class EventSelectView(BaseView):
+    """View to select an event from a dropdown."""
+
+    def __init__(self, events: list[EventSchema], cog: "Event") -> None:
+        """Initialize the EventSelectView."""
+        super().__init__(timeout=60)
+        self.event_list = events
+        self.cog = cog
+
+        if not events:
+            return
+
+        options = [discord.SelectOption(label=event.event_name[:100], value=str(i)) for i, event in enumerate(events)]
+        self.add_item(EventSelect(options=options, view=self))
+
+
+class EventSelect(ui.Select["EventSelectView"]):
+    """Select component for event selection."""
+
+    def __init__(self, options: list[discord.SelectOption], view: "EventSelectView") -> None:
+        """Initialize the select."""
+        super().__init__(placeholder="Select an event to edit", options=options)
+        self.view_ref = view
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        """Handle selection."""
+        event_idx = int(self.values[0])
+        selected_event = self.view_ref.event_list[event_idx]
+
+        initial_data = {
+            "event_name": selected_event.event_name,
+            "event_date": selected_event.event_date.strftime("%m-%d-%Y"),
+            "event_time": selected_event.event_time.strftime("%H:%M"),
+            "location": selected_event.location,
+            "description": selected_event.description,
+        }
+
+        self.view_ref.cog.log.info("Opening edit modal for event '%s'", selected_event.event_name)
+
+        modal = ModelModal(
+            model_cls=EventSchema,
+            callback=lambda modal_interaction, event: self.view_ref.cog._handle_event_update(
+                modal_interaction, event, selected_event
+            ),
+            title="Edit Event",
+            initial_data=initial_data,
+        )
+        await interaction.response.send_modal(modal)
+        self.view_ref.stop()
 
 
 class Event(commands.Cog):
@@ -64,7 +116,28 @@ class Event(commands.Cog):
 
     async def handle_edit_action(self, interaction: discord.Interaction) -> None:
         """Handle event editing."""
-        await interaction.response.send_message("Event edited successfully.")
+        guild_id = interaction.guild_id
+        if not guild_id:
+            embed = error_embed("No Server", "Events must be edited in a server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # [DB CALL]: Fetch guild events
+        events = self.events.get(guild_id, [])
+
+        if not events:
+            embed = error_embed("No Events", "No events found in this server to edit.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        self.log.info("Opening event selection for editing in guild %s", guild_id)
+
+        await interaction.response.defer(ephemeral=True)
+
+        view = EventSelectView(events, self)
+        await interaction.followup.send(content="Select an event to edit:", view=view, ephemeral=True)
+
+        await view.wait()
 
     async def handle_show_action(self, interaction: discord.Interaction) -> None:
         """Handle showing event details."""
@@ -115,6 +188,28 @@ class Event(commands.Cog):
         now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
         embed.set_footer(text=f"Created: {now}")
         return embed
+
+    async def _handle_event_update(
+        self, interaction: discord.Interaction, updated_event: EventSchema, original_event: EventSchema
+    ) -> None:
+        """Process the event update submission."""
+        guild_id = interaction.guild_id
+        if not guild_id:
+            embed = error_embed("No Server", "Events must be updated in a server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # [DB CALL]: Update event
+        guild_events = self.events.setdefault(guild_id, [])
+        if original_event in guild_events:
+            idx = guild_events.index(original_event)
+            guild_events[idx] = updated_event
+
+        self.log.info("Updated event '%s' for guild %s", updated_event.event_name, guild_id)
+
+        embed = self._create_event_embed(updated_event)
+        success = success_embed("Event Updated", "Your event has been updated successfully!")
+        await interaction.response.send_message(embeds=[success, embed], ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
