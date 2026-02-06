@@ -11,8 +11,9 @@ def main() -> None:
     setup_logging(settings.log_level)
 
     # Global bot instance (DEPRECATED: Use Dependency Injection instead).
-    capy_discord.instance = Bot(command_prefix=[settings.prefix, "!"], intents=discord.Intents.all())
-    capy_discord.instance.run(settings.token, log_handler=None)
+    # We assign to _instance so that accessing .instance triggers the deprecation warning in __init__.py
+    capy_discord._instance = Bot(command_prefix=[settings.prefix, "!"], intents=discord.Intents.all())
+    capy_discord._instance.run(settings.token, log_handler=None)
 
 
 main()
