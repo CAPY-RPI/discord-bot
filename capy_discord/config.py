@@ -22,5 +22,8 @@ class Settings(EnvConfig):
     token: str = ""
     debug_guild_id: int | None = None
 
+    # Ticket System Configuration
+    ticket_feedback_channel_id: int = 0
+
 
 settings = Settings()

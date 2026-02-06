@@ -100,3 +100,27 @@ def ignored_embed(title: str, description: str) -> discord.Embed:
         discord.Embed: The created embed.
     """
     return discord.Embed(title=title, description=description, color=STATUS_IGNORED)
+
+
+def loading_embed(
+    title: str,
+    description: str | None = None,
+    *,
+    emoji: str | None = None,
+) -> discord.Embed:
+    """Create a loading status embed.
+
+    Args:
+        title: The embed title
+        description: Optional description
+        emoji: Optional emoji to prepend to title
+
+    Returns:
+        A light grey embed indicating loading/processing status
+    """
+    full_title = f"{emoji} {title}" if emoji else title
+    return discord.Embed(
+        title=full_title,
+        description=description,
+        color=discord.Color.light_grey(),
+    )
