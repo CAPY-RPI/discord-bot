@@ -106,9 +106,7 @@ class TicketBase(commands.Cog):
         description_value = data.description
 
         embed = embeds.unmarked_embed(
-            title=f"{self.command_config['cmd_name_verbose']}: {title_value}",
-            description=description_value,
-            emoji=self.command_config["cmd_emoji"],
+            title=f"{self.command_config['cmd_name_verbose']}: {title_value}", description=description_value
         )
         embed.add_field(name="Submitted by", value=submitter.mention)
 

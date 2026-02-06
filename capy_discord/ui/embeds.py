@@ -101,6 +101,7 @@ def ignored_embed(title: str, description: str) -> discord.Embed:
     """
     return discord.Embed(title=title, description=description, color=STATUS_IGNORED)
 
+
 def loading_embed(
     title: str,
     description: str | None = None,
