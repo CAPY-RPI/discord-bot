@@ -317,8 +317,122 @@ class Event(commands.Cog):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def handle_announce_action(self, interaction: discord.Interaction) -> None:
-        """Handle announcing an event."""
-        await interaction.response.send_message("Event announced successfully.")
+        """Handle announcing an event and user registrations."""
+        guild_id = interaction.guild_id
+        if not guild_id:
+            embed = error_embed("No Server", "Events must be announced in a server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # [DB CALL]: Fetch guild events
+        events = self.events.get(guild_id, [])
+
+        if not events:
+            embed = error_embed("No Events", "No events found in this server to announce.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        self.log.info("Opening event selection for announcement in guild %s", guild_id)
+
+        await interaction.response.defer(ephemeral=True)
+
+        view = EventDropdownView(events, self, "Select an event to announce", self._on_announce_select)
+        await interaction.followup.send(content="Select an event to announce:", view=view, ephemeral=True)
+
+        await view.wait()
+
+    async def _on_announce_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
+        """Handle event selection for announcement."""
+        guild = interaction.guild
+        if not guild:
+            embed = error_embed("No Server", "Cannot determine server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Try to find an announcements channel
+        announcement_channel: discord.TextChannel | None = None
+        for channel in guild.text_channels:
+            if "announce" in channel.name.lower():
+                announcement_channel = channel
+                break
+
+        if not announcement_channel:
+            embed = error_embed(
+                "No Announcement Channel",
+                "Could not find a channel with 'announce' in the name. "
+                "Please rename or create an announcement channel.",
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # Check if bot has permission to post in the channel
+        if not announcement_channel.permissions_for(guild.me).send_messages:
+            embed = error_embed(
+                "No Permission",
+                "I don't have permission to send messages in the announcement channel.",
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        try:
+            # Create announcement embed
+            announce_embed = self._create_announcement_embed(selected_event)
+
+            # Post to announcement channel
+            message = await announcement_channel.send(embed=announce_embed)
+
+            # Add RSVP reactions
+            await message.add_reaction("✅")  # Attending
+            await message.add_reaction("❌")  # Not attending
+
+            self.log.info(
+                "Announced event '%s' to guild %s in channel %s",
+                selected_event.event_name,
+                guild.id,
+                announcement_channel.name,
+            )
+
+            success = success_embed(
+                "Event Announced",
+                f"Event announced successfully in {announcement_channel.mention}!\n"
+                "Users can react with ✅ to attend or ❌ to decline.",
+            )
+            await interaction.response.send_message(embed=success, ephemeral=True)
+
+        except discord.Forbidden:
+            embed = error_embed("Permission Denied", "I don't have permission to send messages in that channel.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except discord.HTTPException:
+            self.log.exception("Failed to announce event")
+            embed = error_embed("Announcement Failed", "Failed to announce the event. Please try again.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    def _create_announcement_embed(self, event: EventSchema) -> discord.Embed:
+        """Create an announcement embed for an event."""
+        embed = discord.Embed(
+            title=f"📅 {event.event_name}",
+            description=event.description or "No description provided.",
+            color=discord.Color.gold(),
+        )
+
+        event_time = datetime.combine(event.event_date, event.event_time)
+        if event_time.tzinfo is None:
+            local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
+            event_time = event_time.replace(tzinfo=local_tz)
+
+        timestamp = int(event_time.timestamp())
+        embed.add_field(name="📍 When", value=f"<t:{timestamp}:F>", inline=False)
+        embed.add_field(name="🗺️ Where", value=event.location or "TBD", inline=False)
+
+        embed.add_field(
+            name="📋 RSVP",
+            value="React with ✅ to attend or ❌ to decline.",
+            inline=False,
+        )
+
+        now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
+        embed.set_footer(text=f"Announced: {now}")
+        return embed
 
     async def _handle_event_submit(self, interaction: discord.Interaction, event: EventSchema) -> None:
         """Process the valid event submission."""
