@@ -9,6 +9,39 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+EMBED_TITLE = "Privacy Policy & Data Handling"
+EMBED_DESCRIPTION = "**Here's how we collect and handle your information:**"
+BASIC_DISCORD_DATA = "• Discord User ID\n• Server (Guild) ID\n• Channel configurations\n• Role assignments"
+ACADEMIC_PROFILE_DATA = (
+    "• Full name (first, middle, last)\n"
+    "• School email address\n"
+    "• Student ID number\n"
+    "• Major(s)\n"
+    "• Expected graduation year\n"
+    "• Phone number (optional)"
+)
+DATA_STORAGE = "• Data is stored in a secure MongoDB database\n• Regular backups are maintained"
+DATA_ACCESS = (
+    "• Club/Organization officers for member management\n"
+    "• Server administrators for server settings\n"
+    "• Bot developers for maintenance only"
+)
+DATA_USAGE = (
+    "• Member verification and tracking\n"
+    "• Event participation management\n"
+    "• Academic program coordination\n"
+    "• Communication within organizations"
+)
+DATA_SHARING = "**Your information is never shared with third parties or used for marketing purposes.**"
+DATA_DELETION = (
+    "You can request data deletion through:\n"
+    "• Contacting the bot administrators\n"
+    "• Calling /profile delete\n\n"
+    f"{DATA_SHARING}\n\n"
+    "Note: Some basic data may be retained for academic records as required."
+)
+FOOTER_TEXT = "Last updated: February 2026"
+
 
 class Privacy(commands.Cog):
     """Privacy policy and data handling information cog."""
@@ -34,72 +67,46 @@ class Privacy(commands.Cog):
             interaction: The Discord interaction initiating the command
         """
         embed = discord.Embed(
-            title="Privacy Policy & Data Handling",
+            title=EMBED_TITLE,
             color=discord.Color.blue(),
-            description="**Here's how we collect and handle your information:**",
+            description=EMBED_DESCRIPTION,
         )
 
         embed.add_field(
             name="Basic Discord Data",
-            value=("• Discord User ID\n• Server (Guild) ID\n• Channel configurations\n• Role assignments\n\n"),
+            value=BASIC_DISCORD_DATA,
             inline=False,
         )
         embed.add_field(
             name="Academic Profile Data",
-            value=(
-                "• Full name (first, middle, last)\n"
-                "• School email address\n"
-                "• Student ID number\n"
-                "• Major(s)\n"
-                "• Expected graduation year\n"
-                "• Phone number (optional)\n\n"
-            ),
+            value=ACADEMIC_PROFILE_DATA,
             inline=False,
         )
 
         embed.add_field(
             name="How We Store Your Data",
-            value=("• Data is stored in a secure MongoDB database\n• Regular backups are maintained\n\n"),
+            value=DATA_STORAGE,
             inline=False,
         )
 
         embed.add_field(
-            name="\n",
-            value=(
-                "**Who can access your data:**\n"
-                "• Club/Organization officers for member management\n"
-                "• Server administrators for server settings\n"
-                "• Bot developers for maintenance only\n"
-            ),
+            name="Who Can Access Your Data",
+            value=DATA_ACCESS,
             inline=False,
         )
         embed.add_field(
-            name="How your data is used",
-            value=(
-                "• Member verification and tracking\n"
-                "• Event participation management\n"
-                "• Academic program coordination\n"
-                "• Communication within organizations\n\n"
-            ),
+            name="How Your Data Is Used",
+            value=DATA_USAGE,
             inline=False,
-        )
-        embed.add_field(
-            name="Your information is never shared or used for marketing purposes.\n", value=(""), inline=False
         )
 
         embed.add_field(
             name="Data Deletion",
-            value=(
-                "You can request data deletion through:\n"
-                "• Contacting the bot administrators\n"
-                "• Calling /profile delete\n\n"
-                "\n"
-                "Note: Some basic data may be retained for academic records as required."
-            ),
+            value=DATA_DELETION,
             inline=False,
         )
 
-        embed.set_footer(text="Last updated: February 2024")
+        embed.set_footer(text=FOOTER_TEXT)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
