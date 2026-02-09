@@ -8,6 +8,7 @@ import discord
 from discord import app_commands, ui
 from discord.ext import commands
 
+from capy_discord.config import settings
 from capy_discord.ui.embeds import error_embed, success_embed
 from capy_discord.ui.forms import ModelModal
 from capy_discord.ui.views import BaseView
@@ -247,10 +248,7 @@ class Event(commands.Cog):
         past_events: list[EventSchema] = []
 
         for event in events:
-            event_time = datetime.combine(event.event_date, event.event_time)
-            if event_time.tzinfo is None:
-                local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
-                event_time = event_time.replace(tzinfo=local_tz)
+            event_time = self._event_datetime(event)
 
             if event_time >= now:
                 upcoming_events.append(event)
@@ -258,8 +256,8 @@ class Event(commands.Cog):
                 past_events.append(event)
 
         # Sort events
-        upcoming_events.sort(key=lambda e: datetime.combine(e.event_date, e.event_time))
-        past_events.sort(key=lambda e: datetime.combine(e.event_date, e.event_time), reverse=True)
+        upcoming_events.sort(key=lambda e: self._event_datetime(e))
+        past_events.sort(key=lambda e: self._event_datetime(e), reverse=True)
 
         # Build embed
         total_count = len(upcoming_events) + len(past_events)
@@ -271,12 +269,7 @@ class Event(commands.Cog):
 
         # Add upcoming events
         for event in upcoming_events:
-            event_time = datetime.combine(event.event_date, event.event_time)
-            if event_time.tzinfo is None:
-                local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
-                event_time = event_time.replace(tzinfo=local_tz)
-
-            timestamp = int(event_time.timestamp())
+            timestamp = int(self._event_datetime(event).timestamp())
             embed.add_field(
                 name=event.event_name,
                 value=f"**When:** <t:{timestamp}:F>\n**Where:** {event.location or 'TBD'}",
@@ -285,12 +278,7 @@ class Event(commands.Cog):
 
         # Add past events with [OLD] prefix
         for event in past_events:
-            event_time = datetime.combine(event.event_date, event.event_time)
-            if event_time.tzinfo is None:
-                local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
-                event_time = event_time.replace(tzinfo=local_tz)
-
-            timestamp = int(event_time.timestamp())
+            timestamp = int(self._event_datetime(event).timestamp())
             embed.add_field(
                 name=f"[OLD] {event.event_name}",
                 value=f"**When:** <t:{timestamp}:F>\n**Where:** {event.location or 'TBD'}",
@@ -350,10 +338,7 @@ class Event(commands.Cog):
         registered_events: list[EventSchema] = []
 
         for event in events:
-            event_time = datetime.combine(event.event_date, event.event_time)
-            if event_time.tzinfo is None:
-                local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
-                event_time = event_time.replace(tzinfo=local_tz)
+            event_time = self._event_datetime(event)
 
             # Only include upcoming events
             if event_time < now:
@@ -363,7 +348,7 @@ class Event(commands.Cog):
             if await self._is_user_registered(event, guild, interaction.user):
                 registered_events.append(event)
 
-        registered_events.sort(key=lambda e: datetime.combine(e.event_date, e.event_time))
+        registered_events.sort(key=lambda e: self._event_datetime(e))
 
         # Build embed
         embed = discord.Embed(
@@ -381,12 +366,7 @@ class Event(commands.Cog):
 
         # Add registered events
         for event in registered_events:
-            event_time = datetime.combine(event.event_date, event.event_time)
-            if event_time.tzinfo is None:
-                local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
-                event_time = event_time.replace(tzinfo=local_tz)
-
-            timestamp = int(event_time.timestamp())
+            timestamp = int(self._event_datetime(event).timestamp())
             embed.add_field(
                 name=event.event_name,
                 value=f"**When:** <t:{timestamp}:F>\n**Where:** {event.location or 'TBD'}",
@@ -394,6 +374,36 @@ class Event(commands.Cog):
             )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @staticmethod
+    def _event_datetime(event: EventSchema) -> datetime:
+        """Convert event date and time to a timezone-aware datetime.
+
+        Args:
+            event: The event containing date and time information.
+
+        Returns:
+            A timezone-aware datetime object.
+        """
+        event_time = datetime.combine(event.event_date, event.event_time)
+        if event_time.tzinfo is None:
+            local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
+            event_time = event_time.replace(tzinfo=local_tz)
+        return event_time
+
+    def _get_announcement_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
+        """Get the announcement channel from config name.
+
+        Args:
+            guild: The guild to search for the announcement channel.
+
+        Returns:
+            The announcement channel if found, None otherwise.
+        """
+        for channel in guild.text_channels:
+            if channel.name.lower() == settings.announcement_channel_name.lower():
+                return channel
+        return None
 
     async def _is_user_registered(
         self, event: EventSchema, guild: discord.Guild, user: discord.User | discord.Member
@@ -416,11 +426,7 @@ class Event(commands.Cog):
             return False
 
         # Try to find the announcement message and check reactions
-        announcement_channel: discord.TextChannel | None = None
-        for channel in guild.text_channels:
-            if "announce" in channel.name.lower():
-                announcement_channel = channel
-                break
+        announcement_channel = self._get_announcement_channel(guild)
 
         if not announcement_channel:
             return False
@@ -470,17 +476,13 @@ class Event(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # Try to find an announcements channel
-        announcement_channel: discord.TextChannel | None = None
-        for channel in guild.text_channels:
-            if "announce" in channel.name.lower():
-                announcement_channel = channel
-                break
+        # Get the announcement channel
+        announcement_channel = self._get_announcement_channel(guild)
 
         if not announcement_channel:
             embed = error_embed(
                 "No Announcement Channel",
-                "Could not find a channel with 'announce' in the name. "
+                f"Could not find a channel named '{settings.announcement_channel_name}'. "
                 "Please rename or create an announcement channel.",
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -541,12 +543,7 @@ class Event(commands.Cog):
             color=discord.Color.gold(),
         )
 
-        event_time = datetime.combine(event.event_date, event.event_time)
-        if event_time.tzinfo is None:
-            local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
-            event_time = event_time.replace(tzinfo=local_tz)
-
-        timestamp = int(event_time.timestamp())
+        timestamp = int(self._event_datetime(event).timestamp())
         embed.add_field(name="📍 When", value=f"<t:{timestamp}:F>", inline=False)
         embed.add_field(name="🗺️ Where", value=event.location or "TBD", inline=False)
 
@@ -581,12 +578,7 @@ class Event(commands.Cog):
         """Helper to build the event display embed."""
         embed = discord.Embed(title=event.event_name, description=event.description)
 
-        event_time = datetime.combine(event.event_date, event.event_time)
-        if event_time.tzinfo is None:
-            local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
-            event_time = event_time.replace(tzinfo=local_tz)
-
-        timestamp = int(event_time.timestamp())
+        timestamp = int(self._event_datetime(event).timestamp())
         embed.add_field(name="Date/Time", value=f"<t:{timestamp}:F>", inline=True)
         embed.add_field(name="Location", value=event.location or "TBD", inline=True)
 
