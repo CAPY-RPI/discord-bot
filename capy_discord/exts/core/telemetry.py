@@ -18,7 +18,6 @@ Future Phases:
 """
 
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
 import discord
@@ -165,7 +164,7 @@ class Telemetry(commands.Cog):
             "guild_id": interaction.guild_id,  # None for DMs
             "guild_name": interaction.guild.name if interaction.guild else None,
             "channel_id": interaction.channel_id,
-            "timestamp": datetime.now(UTC),
+            "timestamp": interaction.created_at,
             "options": options,
         }
 
@@ -207,7 +206,7 @@ class Telemetry(commands.Cog):
             "guild_id": interaction.guild_id,  # None for DMs
             "guild_name": interaction.guild.name if interaction.guild else None,
             "channel_id": interaction.channel_id,
-            "timestamp": datetime.now(UTC),
+            "timestamp": interaction.created_at,
             "options": options,
         }
 
