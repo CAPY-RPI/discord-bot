@@ -291,10 +291,25 @@ class Telemetry(commands.Cog):
         data: dict[str, Any] = interaction.data  # type: ignore[assignment]
         options: dict[str, Any] = {}
 
-        # Handle slash command options
+        # Handle slash command options (including nested subcommands/subcommand groups)
         if "options" in data:
-            for option in data["options"]:
-                options[option["name"]] = self._serialize_value(option.get("value"))
+            def _flatten_options(option_list: list[dict[str, Any]], prefix: str = "") -> None:
+                for opt in option_list:
+                    # Build a stable, flattened key like "subcommand.param"
+                    name = opt.get("name")
+                    if not name:
+                        continue
+
+                    full_name = f"{prefix}.{name}" if prefix else name
+
+                    # Subcommand or subcommand group with nested options
+                    if "options" in opt and isinstance(opt["options"], list):
+                        _flatten_options(opt["options"], full_name)
+                    # Leaf option with a value
+                    elif "value" in opt:
+                        options[full_name] = self._serialize_value(opt.get("value"))
+
+            _flatten_options(data["options"])
 
         # Handle button custom_id
         if "custom_id" in data:
