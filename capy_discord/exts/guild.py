@@ -1,11 +1,10 @@
 import logging
 
 import discord
-from discord import app_commands, ui
+from discord import app_commands
 from discord.ext import commands
 
 from capy_discord.ui.forms import ModelModal
-from capy_discord.ui.views import BaseView
 
 from ._guild_schemas import (
     AnnouncementChannelForm,
@@ -17,74 +16,8 @@ from ._guild_schemas import (
 )
 
 
-class SettingsMenuView(BaseView):
-    """Button-based view that opens ModelModal forms for different guild settings."""
-
-    def __init__(self, cog: "GuildCog") -> None:
-        """Initialize the settings menu view."""
-        super().__init__(timeout=120)
-        self.cog = cog
-
-    @ui.button(label="Channels", style=discord.ButtonStyle.blurple)
-    async def channels(self, interaction: discord.Interaction, _button: ui.Button) -> None:
-        """Open modal to configure channel destinations."""
-        modal = ModelModal(
-            model_cls=ChannelSettingsForm,
-            callback=self.cog._handle_channels,
-            title="Channel Settings",
-        )
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Roles", style=discord.ButtonStyle.blurple)
-    async def roles(self, interaction: discord.Interaction, _button: ui.Button) -> None:
-        """Open modal to configure role scopes."""
-        modal = ModelModal(
-            model_cls=RoleSettingsForm,
-            callback=self.cog._handle_roles,
-            title="Role Settings",
-        )
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Announcement Channel", style=discord.ButtonStyle.green)
-    async def announcement(self, interaction: discord.Interaction, _button: ui.Button) -> None:
-        """Open modal to set the announcement channel."""
-        modal = ModelModal(
-            model_cls=AnnouncementChannelForm,
-            callback=self.cog._handle_announcement,
-            title="Announcement Channel",
-        )
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Feedback Channel", style=discord.ButtonStyle.green)
-    async def feedback(self, interaction: discord.Interaction, _button: ui.Button) -> None:
-        """Open modal to set the feedback channel."""
-        modal = ModelModal(
-            model_cls=FeedbackChannelForm,
-            callback=self.cog._handle_feedback,
-            title="Feedback Channel",
-        )
-        await interaction.response.send_modal(modal)
-
-    @ui.button(label="Onboarding Welcome", style=discord.ButtonStyle.gray)
-    async def onboarding(self, interaction: discord.Interaction, _button: ui.Button) -> None:
-        """Open modal to edit the onboarding welcome message."""
-        guild_id = interaction.guild.id if interaction.guild else None
-        default_msg = None
-        if guild_id and guild_id in self.cog._store:
-            default_msg = self.cog._store[guild_id].onboarding_welcome
-        modal = ModelModal(
-            model_cls=WelcomeMessageForm,
-            callback=self.cog._handle_welcome,
-            title="Onboarding Welcome",
-            initial_data={"message": default_msg} if default_msg else None,
-        )
-        await interaction.response.send_modal(modal)
-
-
 class GuildCog(commands.Cog):
     """Guild settings management for the capy_discord framework."""
-
-    guild_group = app_commands.Group(name="guild", description="Guild settings commands")
 
     def __init__(self, bot: commands.Bot) -> None:
         """Initialize the GuildCog and attach an in-memory settings store to the bot."""
@@ -103,6 +36,97 @@ class GuildCog(commands.Cog):
         if guild_id not in self._store:
             self._store[guild_id] = GuildSettings()
         return self._store[guild_id]
+
+    # -- /guild command with action choices ---------------------------------
+
+    @app_commands.command(name="guild", description="Manage guild settings")
+    @app_commands.describe(action="The setting to configure")
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="channels", value="channels"),
+            app_commands.Choice(name="roles", value="roles"),
+            app_commands.Choice(name="announcement", value="announcement"),
+            app_commands.Choice(name="feedback", value="feedback"),
+            app_commands.Choice(name="onboarding", value="onboarding"),
+        ]
+    )
+    @app_commands.guild_only()
+    async def guild(self, interaction: discord.Interaction, action: str) -> None:
+        """Handle guild settings actions based on the selected choice."""
+        if not interaction.guild:
+            await interaction.response.send_message("This must be used in a server.", ephemeral=True)
+            return
+
+        settings = self._ensure_settings(interaction.guild.id)
+
+        if action == "channels":
+            await self._open_channels(interaction, settings)
+        elif action == "roles":
+            await self._open_roles(interaction, settings)
+        elif action == "announcement":
+            await self._open_announcement(interaction, settings)
+        elif action == "feedback":
+            await self._open_feedback(interaction, settings)
+        elif action == "onboarding":
+            await self._open_onboarding(interaction, settings)
+
+    # -- Modal launchers -----------------------------------------------------
+
+    async def _open_channels(self, interaction: discord.Interaction, settings: GuildSettings) -> None:
+        """Launch the channel settings modal pre-filled with current values."""
+        initial = {
+            "reports": str(settings.reports_channel) if settings.reports_channel else None,
+            "announcements": str(settings.announcements_channel) if settings.announcements_channel else None,
+            "feedback": str(settings.feedback_channel) if settings.feedback_channel else None,
+        }
+        modal = ModelModal(
+            model_cls=ChannelSettingsForm,
+            callback=self._handle_channels,
+            title="Channel Settings",
+            initial_data=initial,
+        )
+        await interaction.response.send_modal(modal)
+
+    async def _open_roles(self, interaction: discord.Interaction, settings: GuildSettings) -> None:
+        """Launch the role settings modal pre-filled with current values."""
+        initial = {"admin": settings.admin_role, "member": settings.member_role}
+        modal = ModelModal(
+            model_cls=RoleSettingsForm, callback=self._handle_roles, title="Role Settings", initial_data=initial
+        )
+        await interaction.response.send_modal(modal)
+
+    async def _open_announcement(self, interaction: discord.Interaction, settings: GuildSettings) -> None:
+        """Launch the announcement channel modal pre-filled with current value."""
+        initial = {"channel": str(settings.announcements_channel) if settings.announcements_channel else None}
+        modal = ModelModal(
+            model_cls=AnnouncementChannelForm,
+            callback=self._handle_announcement,
+            title="Announcement Channel",
+            initial_data=initial,
+        )
+        await interaction.response.send_modal(modal)
+
+    async def _open_feedback(self, interaction: discord.Interaction, settings: GuildSettings) -> None:
+        """Launch the feedback channel modal pre-filled with current value."""
+        initial = {"channel": str(settings.feedback_channel) if settings.feedback_channel else None}
+        modal = ModelModal(
+            model_cls=FeedbackChannelForm,
+            callback=self._handle_feedback,
+            title="Feedback Channel",
+            initial_data=initial,
+        )
+        await interaction.response.send_modal(modal)
+
+    async def _open_onboarding(self, interaction: discord.Interaction, settings: GuildSettings) -> None:
+        """Launch the onboarding welcome modal pre-filled with current value."""
+        initial = {"message": settings.onboarding_welcome} if settings.onboarding_welcome else None
+        modal = ModelModal(
+            model_cls=WelcomeMessageForm,
+            callback=self._handle_welcome,
+            title="Onboarding Welcome",
+            initial_data=initial,
+        )
+        await interaction.response.send_modal(modal)
 
     # -- ModelModal callbacks ------------------------------------------------
     # Each callback receives (interaction, validated_pydantic_model).
@@ -154,19 +178,6 @@ class GuildCog(commands.Cog):
         settings = self._ensure_settings(interaction.guild.id)
         settings.onboarding_welcome = form.message or None
         await interaction.response.send_message("✅ Welcome message updated.", ephemeral=True)
-
-    # -- Slash command -------------------------------------------------------
-
-    @guild_group.command(name="settings")
-    @app_commands.guild_only()
-    async def settings(self, interaction: discord.Interaction) -> None:
-        """Open the guild settings menu."""
-        if not isinstance(interaction.guild, discord.Guild):
-            await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
-            return
-
-        view = SettingsMenuView(self)
-        await view.reply(interaction, content="Guild settings — choose a category to edit:", ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
