@@ -198,10 +198,9 @@ class Event(commands.Cog):
 
         # Build embed
         total_count = len(upcoming_events) + len(past_events)
-        embed = discord.Embed(
-            title="Events",
-            description=(f"Found {total_count} events (Upcoming: {len(upcoming_events)}, Past: {len(past_events)})"),
-            color=discord.Color.blue(),
+        embed = success_embed(
+            "Events",
+            f"Found {total_count} events (Upcoming: {len(upcoming_events)}, Past: {len(past_events)})",
         )
 
         # Add upcoming events
@@ -265,10 +264,9 @@ class Event(commands.Cog):
         registered_events.sort(key=self._event_datetime)
 
         # Build embed
-        embed = discord.Embed(
-            title="Your Registered Events",
-            description="Events you have registered for by reacting with ✅",
-            color=discord.Color.purple(),
+        embed = success_embed(
+            "Your Registered Events",
+            "Events you have registered for by reacting with ✅",
         )
 
         if not registered_events:
@@ -353,6 +351,14 @@ class Event(commands.Cog):
         """Format the when/where field for embeds."""
         time_str = self._format_event_time_est(event)
         return f"**When:** {time_str}\n**Where:** {event.location or 'TBD'}"
+
+    def _apply_event_fields(self, embed: discord.Embed, event: EventSchema) -> None:
+        """Append event detail fields to an embed."""
+        embed.add_field(name="Event", value=event.event_name, inline=False)
+        embed.add_field(name="Date/Time", value=self._format_event_time_est(event), inline=True)
+        embed.add_field(name="Location", value=event.location or "TBD", inline=True)
+        if event.description:
+            embed.add_field(name="Description", value=event.description, inline=False)
 
     def _get_announcement_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
         """Get the announcement channel from config name.
@@ -488,6 +494,7 @@ class Event(commands.Cog):
                 f"Event announced successfully in {announcement_channel.mention}!\n"
                 "Users can react with ✅ to attend or ❌ to decline.",
             )
+            self._apply_event_fields(success, selected_event)
             await interaction.response.send_message(embed=success, ephemeral=True)
 
         except discord.Forbidden:
@@ -500,14 +507,11 @@ class Event(commands.Cog):
 
     def _create_announcement_embed(self, event: EventSchema) -> discord.Embed:
         """Create an announcement embed for an event."""
-        embed = discord.Embed(
-            title=f"📅 {event.event_name}",
-            description=event.description or "No description provided.",
-            color=discord.Color.gold(),
+        embed = success_embed(
+            "Event Announcement",
+            event.description or "No description provided.",
         )
-
-        embed.add_field(name="📍 When", value=self._format_event_time_est(event), inline=False)
-        embed.add_field(name="🗺️ Where", value=event.location or "TBD", inline=False)
+        self._apply_event_fields(embed, event)
 
         embed.add_field(
             name="📋 RSVP",
@@ -532,19 +536,16 @@ class Event(commands.Cog):
 
         self.log.info("Created event '%s' for guild %s", event.event_name, guild_id)
 
-        embed = self._create_event_embed(event)
-        success = success_embed("Event Created", "Your event has been created successfully!")
-        await interaction.response.send_message(embeds=[success, embed], ephemeral=True)
-
-    def _create_event_embed(self, event: EventSchema) -> discord.Embed:
-        """Helper to build the event display embed."""
-        embed = discord.Embed(title=event.event_name, description=event.description)
-
-        embed.add_field(name="Date/Time", value=self._format_event_time_est(event), inline=True)
-        embed.add_field(name="Location", value=event.location or "TBD", inline=True)
-
+        embed = success_embed("Event Created", "Your event has been created successfully!")
+        self._apply_event_fields(embed, event)
         now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
         embed.set_footer(text=f"Created: {now}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    def _create_event_embed(self, title: str, description: str, event: EventSchema) -> discord.Embed:
+        """Helper to build a success-styled event display embed."""
+        embed = success_embed(title, description)
+        self._apply_event_fields(embed, event)
         return embed
 
     async def _handle_event_update(
@@ -565,13 +566,22 @@ class Event(commands.Cog):
 
         self.log.info("Updated event '%s' for guild %s", updated_event.event_name, guild_id)
 
-        embed = self._create_event_embed(updated_event)
-        success = success_embed("Event Updated", "Your event has been updated successfully!")
-        await interaction.response.send_message(embeds=[success, embed], ephemeral=True)
+        embed = self._create_event_embed(
+            "Event Updated",
+            "Your event has been updated successfully!",
+            updated_event,
+        )
+        now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
+        embed.set_footer(text=f"Updated: {now}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def _on_show_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
         """Handle event selection for showing details."""
-        embed = self._create_event_embed(selected_event)
+        embed = self._create_event_embed(
+            "Event Details",
+            "Here are the details for this event.",
+            selected_event,
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def _on_delete_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
