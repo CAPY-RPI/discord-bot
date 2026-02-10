@@ -149,78 +149,15 @@ class Event(commands.Cog):
 
     async def handle_edit_action(self, interaction: discord.Interaction) -> None:
         """Handle event editing."""
-        guild_id = interaction.guild_id
-        if not guild_id:
-            embed = error_embed("No Server", "Events must be edited in a server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # [DB CALL]: Fetch guild events
-        events = self.events.get(guild_id, [])
-
-        if not events:
-            embed = error_embed("No Events", "No events found in this server to edit.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        self.log.info("Opening event selection for editing in guild %s", guild_id)
-
-        await interaction.response.defer(ephemeral=True)
-
-        view = EventDropdownView(events, self, "Select an event to edit", self._on_edit_select)
-        await interaction.followup.send(content="Select an event to edit:", view=view, ephemeral=True)
-
-        await view.wait()
+        await self._get_events_for_dropdown(interaction, "edit", self._on_edit_select)
 
     async def handle_show_action(self, interaction: discord.Interaction) -> None:
         """Handle showing event details."""
-        guild_id = interaction.guild_id
-        if not guild_id:
-            embed = error_embed("No Server", "Events must be viewed in a server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # [DB CALL]: Fetch guild events
-        events = self.events.get(guild_id, [])
-
-        if not events:
-            embed = error_embed("No Events", "No events found in this server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        self.log.info("Opening event selection for viewing in guild %s", guild_id)
-
-        await interaction.response.defer(ephemeral=True)
-
-        view = EventDropdownView(events, self, "Select an event to view", self._on_show_select)
-        await interaction.followup.send(content="Select an event to view:", view=view, ephemeral=True)
-
-        await view.wait()
+        await self._get_events_for_dropdown(interaction, "view", self._on_show_select)
 
     async def handle_delete_action(self, interaction: discord.Interaction) -> None:
         """Handle event deletion."""
-        guild_id = interaction.guild_id
-        if not guild_id:
-            embed = error_embed("No Server", "Events must be deleted in a server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # [DB CALL]: Fetch guild events
-        events = self.events.get(guild_id, [])
-
-        if not events:
-            embed = error_embed("No Events", "No events found in this server to delete.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        self.log.info("Opening event selection for deletion in guild %s", guild_id)
-
-        await interaction.response.defer(ephemeral=True)
-
-        view = EventDropdownView(events, self, "Select an event to delete", self._on_delete_select)
-        await interaction.followup.send(content="Select an event to delete:", view=view, ephemeral=True)
-
-        await view.wait()
+        await self._get_events_for_dropdown(interaction, "delete", self._on_delete_select)
 
     async def handle_list_action(self, interaction: discord.Interaction) -> None:
         """Handle listing all events."""
@@ -243,7 +180,7 @@ class Event(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         # Separate into upcoming and past events
-        now = datetime.now().astimezone()
+        now = datetime.now(ZoneInfo("UTC"))
         upcoming_events: list[EventSchema] = []
         past_events: list[EventSchema] = []
 
@@ -256,8 +193,8 @@ class Event(commands.Cog):
                 past_events.append(event)
 
         # Sort events
-        upcoming_events.sort(key=lambda e: self._event_datetime(e))
-        past_events.sort(key=lambda e: self._event_datetime(e), reverse=True)
+        upcoming_events.sort(key=self._event_datetime)
+        past_events.sort(key=self._event_datetime, reverse=True)
 
         # Build embed
         total_count = len(upcoming_events) + len(past_events)
@@ -269,19 +206,17 @@ class Event(commands.Cog):
 
         # Add upcoming events
         for event in upcoming_events:
-            timestamp = int(self._event_datetime(event).timestamp())
             embed.add_field(
                 name=event.event_name,
-                value=f"**When:** <t:{timestamp}:F>\n**Where:** {event.location or 'TBD'}",
+                value=self._format_when_where(event),
                 inline=False,
             )
 
         # Add past events with [OLD] prefix
         for event in past_events:
-            timestamp = int(self._event_datetime(event).timestamp())
             embed.add_field(
                 name=f"[OLD] {event.event_name}",
-                value=f"**When:** <t:{timestamp}:F>\n**Where:** {event.location or 'TBD'}",
+                value=self._format_when_where(event),
                 inline=False,
             )
 
@@ -289,28 +224,7 @@ class Event(commands.Cog):
 
     async def handle_announce_action(self, interaction: discord.Interaction) -> None:
         """Handle announcing an event and user registrations."""
-        guild_id = interaction.guild_id
-        if not guild_id:
-            embed = error_embed("No Server", "Events must be announced in a server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # [DB CALL]: Fetch guild events
-        events = self.events.get(guild_id, [])
-
-        if not events:
-            embed = error_embed("No Events", "No events found in this server to announce.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        self.log.info("Opening event selection for announcement in guild %s", guild_id)
-
-        await interaction.response.defer(ephemeral=True)
-
-        view = EventDropdownView(events, self, "Select an event to announce", self._on_announce_select)
-        await interaction.followup.send(content="Select an event to announce:", view=view, ephemeral=True)
-
-        await view.wait()
+        await self._get_events_for_dropdown(interaction, "announce", self._on_announce_select)
 
     async def handle_myevents_action(self, interaction: discord.Interaction) -> None:
         """Handle showing events the user has registered for via RSVP."""
@@ -334,7 +248,7 @@ class Event(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         # Get upcoming events the user has registered for
-        now = datetime.now().astimezone()
+        now = datetime.now(ZoneInfo("UTC"))
         registered_events: list[EventSchema] = []
 
         for event in events:
@@ -348,7 +262,7 @@ class Event(commands.Cog):
             if await self._is_user_registered(event, guild, interaction.user):
                 registered_events.append(event)
 
-        registered_events.sort(key=lambda e: self._event_datetime(e))
+        registered_events.sort(key=self._event_datetime)
 
         # Build embed
         embed = discord.Embed(
@@ -366,30 +280,79 @@ class Event(commands.Cog):
 
         # Add registered events
         for event in registered_events:
-            timestamp = int(self._event_datetime(event).timestamp())
             embed.add_field(
                 name=event.event_name,
-                value=f"**When:** <t:{timestamp}:F>\n**Where:** {event.location or 'TBD'}",
+                value=self._format_when_where(event),
                 inline=False,
             )
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    async def _get_events_for_dropdown(
+        self,
+        interaction: discord.Interaction,
+        action_name: str,
+        callback: Callable[[discord.Interaction, EventSchema], Coroutine[Any, Any, None]],
+    ) -> None:
+        """Generic handler to get events and show dropdown for selection.
+
+        Args:
+            interaction: The Discord interaction.
+            action_name: Name of the action (e.g., "edit", "view", "delete").
+            callback: Async callback to handle the selected event.
+        """
+        guild_id = interaction.guild_id
+        if not guild_id:
+            embed = error_embed("No Server", f"Events must be {action_name}ed in a server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        # [DB CALL]: Fetch guild events
+        events = self.events.get(guild_id, [])
+
+        if not events:
+            embed = error_embed("No Events", f"No events found in this server to {action_name}.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        self.log.info("Opening event selection for %s in guild %s", action_name, guild_id)
+
+        await interaction.response.defer(ephemeral=True)
+
+        view = EventDropdownView(events, self, f"Select an event to {action_name}", callback)
+        await interaction.followup.send(content=f"Select an event to {action_name}:", view=view, ephemeral=True)
+
+        await view.wait()
+
     @staticmethod
     def _event_datetime(event: EventSchema) -> datetime:
-        """Convert event date and time to a timezone-aware datetime.
+        """Convert event date and time to a timezone-aware datetime in UTC.
+
+        User input is treated as EST, then converted to UTC for storage.
 
         Args:
             event: The event containing date and time information.
 
         Returns:
-            A timezone-aware datetime object.
+            A UTC timezone-aware datetime object.
         """
+        est = ZoneInfo("America/New_York")
         event_time = datetime.combine(event.event_date, event.event_time)
+        # Treat user input as EST
         if event_time.tzinfo is None:
-            local_tz = datetime.now().astimezone().tzinfo or ZoneInfo("UTC")
-            event_time = event_time.replace(tzinfo=local_tz)
-        return event_time
+            event_time = event_time.replace(tzinfo=est)
+        # Convert to UTC for storage
+        return event_time.astimezone(ZoneInfo("UTC"))
+
+    def _format_event_time_est(self, event: EventSchema) -> str:
+        """Format an event's date/time in EST for user-facing display."""
+        event_dt_est = self._event_datetime(event).astimezone(ZoneInfo("America/New_York"))
+        return event_dt_est.strftime("%B %d, %Y at %I:%M %p EST")
+
+    def _format_when_where(self, event: EventSchema) -> str:
+        """Format the when/where field for embeds."""
+        time_str = self._format_event_time_est(event)
+        return f"**When:** {time_str}\n**Where:** {event.location or 'TBD'}"
 
     def _get_announcement_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
         """Get the announcement channel from config name.
@@ -543,8 +506,7 @@ class Event(commands.Cog):
             color=discord.Color.gold(),
         )
 
-        timestamp = int(self._event_datetime(event).timestamp())
-        embed.add_field(name="📍 When", value=f"<t:{timestamp}:F>", inline=False)
+        embed.add_field(name="📍 When", value=self._format_event_time_est(event), inline=False)
         embed.add_field(name="🗺️ Where", value=event.location or "TBD", inline=False)
 
         embed.add_field(
@@ -578,8 +540,7 @@ class Event(commands.Cog):
         """Helper to build the event display embed."""
         embed = discord.Embed(title=event.event_name, description=event.description)
 
-        timestamp = int(self._event_datetime(event).timestamp())
-        embed.add_field(name="Date/Time", value=f"<t:{timestamp}:F>", inline=True)
+        embed.add_field(name="Date/Time", value=self._format_event_time_est(event), inline=True)
         embed.add_field(name="Location", value=event.location or "TBD", inline=True)
 
         now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
