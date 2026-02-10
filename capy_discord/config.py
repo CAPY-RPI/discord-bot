@@ -25,8 +25,5 @@ class Settings(EnvConfig):
     # Ticket System Configuration
     ticket_feedback_channel_id: int = 0
 
-    # Event System Configuration
-    announcement_channel_name: str = "test-announcements"
-
 
 settings = Settings()
