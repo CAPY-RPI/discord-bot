@@ -293,23 +293,7 @@ class Telemetry(commands.Cog):
 
         # Handle slash command options (including nested subcommands/subcommand groups)
         if "options" in data:
-            def _flatten_options(option_list: list[dict[str, Any]], prefix: str = "") -> None:
-                for opt in option_list:
-                    # Build a stable, flattened key like "subcommand.param"
-                    name = opt.get("name")
-                    if not name:
-                        continue
-
-                    full_name = f"{prefix}.{name}" if prefix else name
-
-                    # Subcommand or subcommand group with nested options
-                    if "options" in opt and isinstance(opt["options"], list):
-                        _flatten_options(opt["options"], full_name)
-                    # Leaf option with a value
-                    elif "value" in opt:
-                        options[full_name] = self._serialize_value(opt.get("value"))
-
-            _flatten_options(data["options"])
+            self._extract_command_options(data["options"], options)
 
         # Handle button custom_id
         if "custom_id" in data:
@@ -321,14 +305,48 @@ class Telemetry(commands.Cog):
 
         # Handle modal components (form fields)
         if "components" in data:
-            for action_row in data["components"]:
-                for component in action_row.get("components", []):
-                    field_id = component.get("custom_id")
-                    field_value = component.get("value")
-                    if field_id and field_value is not None:
-                        options[field_id] = field_value
+            self._extract_modal_components(data["components"], options)
 
         return options
+
+    def _extract_command_options(
+        self, option_list: list[dict[str, Any]], options: dict[str, Any], prefix: str = ""
+    ) -> None:
+        """Recursively extract and flatten slash command options.
+
+        Args:
+            option_list: List of command options from interaction data
+            options: Dictionary to populate with flattened options (modified in place)
+            prefix: Current prefix for nested options (e.g., "subcommand")
+        """
+        for opt in option_list:
+            # Build a stable, flattened key like "subcommand.param"
+            name = opt.get("name")
+            if not name:
+                continue
+
+            full_name = f"{prefix}.{name}" if prefix else name
+
+            # Subcommand or subcommand group with nested options
+            if "options" in opt and isinstance(opt["options"], list):
+                self._extract_command_options(opt["options"], options, full_name)
+            # Leaf option with a value
+            elif "value" in opt:
+                options[full_name] = self._serialize_value(opt.get("value"))
+
+    def _extract_modal_components(self, components: list[dict[str, Any]], options: dict[str, Any]) -> None:
+        """Extract form field values from modal components.
+
+        Args:
+            components: List of modal components (action rows)
+            options: Dictionary to populate with field values (modified in place)
+        """
+        for action_row in components:
+            for component in action_row.get("components", []):
+                field_id = component.get("custom_id")
+                field_value = component.get("value")
+                if field_id and field_value is not None:
+                    options[field_id] = field_value
 
     def _serialize_value(self, value: Any) -> Any:  # noqa: ANN401
         """Convert complex Discord objects to simple serializable types.
