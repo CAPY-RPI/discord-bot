@@ -1,8 +1,10 @@
 """Telemetry extension for tracking Discord bot interactions.
 
-PHASE 1: Event Capture and Logging
-This is a foundational implementation that captures Discord events and logs them to console.
-No database, no queue, no background tasks - just pure event capture to prove the concept works.
+PHASE 2a: Queue Buffering and Error Categorization
+Builds on Phase 1 event capture by adding:
+- asyncio.Queue to decouple event listeners from I/O (fire-and-forget enqueue)
+- Background consumer task that drains the queue and logs events
+- Error categorization: "user_error" (UserFriendlyError) vs "internal_error" (real bugs)
 
 Key Design Decisions:
 - We capture on_interaction (ALL interactions: commands, buttons, dropdowns, modals)
@@ -10,23 +12,45 @@ Key Design Decisions:
 - Data is extracted to simple dicts (not stored as Discord objects)
 - All guild-specific fields handle None for DM scenarios
 - Telemetry failures are caught and logged, never crashing the bot
+- Each interaction gets a UUID correlation_id linking interaction and completion logs
+- Command failures are tracked via log_command_failure called from bot error handlers
 
 Future Phases:
-- Phase 2: Add asyncio.Queue for async event buffering
 - Phase 3: Add database storage (SQLite or PostgreSQL)
 - Phase 4: Add web dashboard for analytics
 """
 
+import asyncio
 import logging
+import time
+import uuid
+from dataclasses import dataclass
 from typing import Any
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
+
+from capy_discord.errors import UserFriendlyError
 
 # Discord component type constants
 COMPONENT_TYPE_BUTTON = 2
 COMPONENT_TYPE_SELECT = 3
+
+# Stale interaction entries older than this (seconds) are cleaned up
+_STALE_THRESHOLD_SECONDS = 60
+
+# Queue and consumer configuration
+_QUEUE_MAX_SIZE = 1000
+_CONSUMER_INTERVAL_SECONDS = 1.0
+
+
+@dataclass(slots=True)
+class TelemetryEvent:
+    """A telemetry event to be processed by the background consumer."""
+
+    event_type: str  # "interaction" or "completion"
+    data: dict[str, Any]
 
 
 class Telemetry(commands.Cog):
@@ -37,12 +61,11 @@ class Telemetry(commands.Cog):
 
     Captured Events:
     - on_interaction: Captures ALL user interactions (commands, buttons, dropdowns, modals)
-    - on_app_command: Captures slash command completions with clean metadata
+    - on_app_command_completion: Captures slash command completions with clean metadata
+    - log_command_failure: Called from bot error handler to capture failed commands
 
-    Why both events?
-    - on_interaction fires BEFORE command execution (captures attempts, even failed ones)
-    - on_app_command fires AFTER successful command execution (cleaner data, only successful commands)
-    - Having both gives us a complete picture of user behavior
+    Each interaction is assigned a UUID correlation_id that links the interaction log
+    to its corresponding completion or failure log.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -53,7 +76,87 @@ class Telemetry(commands.Cog):
         """
         self.bot = bot
         self.log = logging.getLogger(__name__)
-        self.log.info("Telemetry cog initialized - Phase 1: Console logging only")
+        # Maps interaction.id -> (correlation_id, start_time_monotonic)
+        self._pending: dict[int, tuple[str, float]] = {}
+        self._queue: asyncio.Queue[TelemetryEvent] = asyncio.Queue(maxsize=_QUEUE_MAX_SIZE)
+        self.log.info("Telemetry cog initialized - Phase 2a: Queue buffering and error categorization")
+
+    # ========================================================================================
+    # LIFECYCLE
+    # ========================================================================================
+
+    async def cog_load(self) -> None:
+        """Start the background consumer task."""
+        self._consumer_task.start()
+
+    async def cog_unload(self) -> None:
+        """Stop the consumer and flush remaining events."""
+        self._consumer_task.cancel()
+        self._drain_queue()
+
+    # ========================================================================================
+    # BACKGROUND CONSUMER
+    # ========================================================================================
+
+    @tasks.loop(seconds=_CONSUMER_INTERVAL_SECONDS)
+    async def _consumer_task(self) -> None:
+        """Periodically drain the queue and process pending telemetry events."""
+        self._process_pending_events()
+
+    @_consumer_task.before_loop
+    async def _before_consumer(self) -> None:
+        await self.bot.wait_until_ready()
+
+    def _process_pending_events(self) -> None:
+        """Drain the queue and dispatch each event. Capped at _QUEUE_MAX_SIZE per tick."""
+        processed = 0
+        while processed < _QUEUE_MAX_SIZE:
+            try:
+                event = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            self._dispatch_event(event)
+            processed += 1
+
+    def _drain_queue(self) -> None:
+        """Flush remaining events on unload. Warns if any events were pending."""
+        count = 0
+        while True:
+            try:
+                event = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            self._dispatch_event(event)
+            count += 1
+        if count:
+            self.log.warning("Drained %d telemetry event(s) during cog unload", count)
+
+    def _dispatch_event(self, event: TelemetryEvent) -> None:
+        """Route an event to the appropriate logging method.
+
+        Args:
+            event: The telemetry event to dispatch
+        """
+        try:
+            if event.event_type == "interaction":
+                self._log_interaction(event.data)
+            elif event.event_type == "completion":
+                self._log_completion(**event.data)
+            else:
+                self.log.warning("Unknown telemetry event type: %s", event.event_type)
+        except Exception:
+            self.log.exception("Failed to dispatch telemetry event: %s", event.event_type)
+
+    def _enqueue(self, event: TelemetryEvent) -> None:
+        """Enqueue a telemetry event. Drops the event if the queue is full.
+
+        Args:
+            event: The telemetry event to enqueue
+        """
+        try:
+            self._queue.put_nowait(event)
+        except asyncio.QueueFull:
+            self.log.warning("Telemetry queue full — dropping %s event", event.event_type)
 
     # ========================================================================================
     # EVENT LISTENERS
@@ -69,24 +172,26 @@ class Telemetry(commands.Cog):
         - Dropdown selections (Select menus)
         - Modal submissions (Forms)
 
-        Why capture this?
-        - Gives us a complete picture of ALL user engagement
-        - Captures failed command attempts (before validation)
-        - Tracks non-command interactions (buttons, dropdowns)
-
         Args:
             interaction: The Discord interaction object
         """
         try:
+            # Clean up stale entries that never got a completion/failure
+            self._cleanup_stale_entries()
+
+            # Generate correlation ID and record start time
+            correlation_id = uuid.uuid4().hex[:12]
+            self._pending[interaction.id] = (correlation_id, time.monotonic())
+
             # Extract structured event data
             event_data = self._extract_interaction_data(interaction)
+            event_data["correlation_id"] = correlation_id
 
-            # Log to console (Phase 1: console only, Phase 3 will add database)
-            self._log_event(event_data)
+            # Enqueue for background processing
+            self._enqueue(TelemetryEvent("interaction", event_data))
 
         except Exception:
             # CRITICAL: Telemetry must never crash the bot
-            # Log the error but don't re-raise
             self.log.exception("Failed to capture on_interaction event")
 
     @commands.Cog.listener()
@@ -97,28 +202,77 @@ class Telemetry(commands.Cog):
     ) -> None:
         """Capture successful slash command executions.
 
-        This event fires AFTER a slash command successfully completes.
-        It provides cleaner metadata than on_interaction and only fires for actual commands.
-
-        Why capture this separately from on_interaction?
-        - Cleaner command metadata (name, parameters)
-        - Only successful executions (on_interaction captures failed attempts too)
-        - Better for analytics on "what commands users actually complete"
+        Logs a slim completion record with correlation_id, command name,
+        status, and execution time. Full metadata is in the interaction log.
 
         Args:
             interaction: The Discord interaction object
             command: The app command that was executed
         """
         try:
-            # Extract structured event data
-            event_data = self._extract_app_command_data(interaction, command)
+            correlation_id, start_time = self._pop_pending(interaction.id)
+            duration_ms = round((time.monotonic() - start_time) * 1000, 1)
 
-            # Log to console (Phase 1: console only)
-            self._log_event(event_data)
+            self._enqueue(
+                TelemetryEvent(
+                    "completion",
+                    {
+                        "correlation_id": correlation_id,
+                        "command_name": command.name,
+                        "status": "success",
+                        "duration_ms": duration_ms,
+                    },
+                )
+            )
 
         except Exception:
             # CRITICAL: Telemetry must never crash the bot
             self.log.exception("Failed to capture on_app_command_completion event")
+
+    # ========================================================================================
+    # FAILURE TRACKING (called from bot.py error handler)
+    # ========================================================================================
+
+    def log_command_failure(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ) -> None:
+        """Log a command failure with correlation to the original interaction.
+
+        Called from Bot.on_tree_error to track which commands fail and why.
+        Categorizes errors as "user_error" (UserFriendlyError) or "internal_error".
+
+        Args:
+            interaction: The Discord interaction object
+            error: The error that occurred
+        """
+        try:
+            correlation_id, start_time = self._pop_pending(interaction.id)
+            duration_ms = round((time.monotonic() - start_time) * 1000, 1)
+
+            # Unwrap CommandInvokeError to get the actual cause
+            actual_error = error.original if isinstance(error, app_commands.CommandInvokeError) else error
+
+            status = "user_error" if isinstance(actual_error, UserFriendlyError) else "internal_error"
+
+            error_type = type(actual_error).__name__
+
+            self._enqueue(
+                TelemetryEvent(
+                    "completion",
+                    {
+                        "correlation_id": correlation_id,
+                        "command_name": interaction.command.name if interaction.command else "unknown",
+                        "status": status,
+                        "duration_ms": duration_ms,
+                        "error_type": error_type,
+                    },
+                )
+            )
+
+        except Exception:
+            self.log.exception("Failed to capture command failure event")
 
     # ========================================================================================
     # DATA EXTRACTION METHODS
@@ -131,79 +285,23 @@ class Telemetry(commands.Cog):
         with only the data we care about. We don't store Discord objects directly
         because they can't be serialized to JSON/database easily.
 
-        Handles Edge Cases:
-        - DMs where guild_id is None
-        - Non-command interactions (buttons, dropdowns) where command name is missing
-        - Complex interaction types (modals, select menus)
-
         Args:
             interaction: The Discord interaction object
 
         Returns:
             Dict with structured event data ready for logging/storage
         """
-        # Determine interaction type (command, button, dropdown, modal, etc)
         interaction_type = self._get_interaction_type(interaction)
-
-        # Extract command name if this is a command interaction
-        # For buttons/dropdowns, this will be None or the custom_id
         command_name = self._get_command_name(interaction)
-
-        # Extract command options/parameters if available
-        # For slash commands: {"username": "john", "count": 5}
-        # For buttons: {"custom_id": "confirm_button"}
-        # For dropdowns: {"values": ["option1", "option2"]}
         options = self._extract_interaction_options(interaction)
 
         return {
             "event_type": "interaction",
             "interaction_type": interaction_type,
             "user_id": interaction.user.id,
-            "username": str(interaction.user),  # "username#1234" or new format
-            "command_name": command_name,
-            "guild_id": interaction.guild_id,  # None for DMs
-            "guild_name": interaction.guild.name if interaction.guild else None,
-            "channel_id": interaction.channel_id,
-            "timestamp": interaction.created_at,
-            "options": options,
-        }
-
-    def _extract_app_command_data(
-        self,
-        interaction: discord.Interaction,
-        command: app_commands.Command | app_commands.ContextMenu,
-    ) -> dict[str, Any]:
-        """Extract structured data from a completed app command.
-
-        This provides cleaner metadata than on_interaction since we have
-        the actual Command object with its name and parameters.
-
-        Args:
-            interaction: The Discord interaction object
-            command: The app command that was executed
-
-        Returns:
-            Dict with structured event data ready for logging/storage
-        """
-        # Get command parameters from the interaction namespace
-        # For /ping: {}
-        # For /kick user:@john reason:"spam": {"user": "john", "reason": "spam"}
-        options = {}
-        if hasattr(interaction, "namespace"):
-            # Convert namespace to dict, filtering out private attributes
-            options = {
-                key: self._serialize_value(value)
-                for key, value in vars(interaction.namespace).items()
-                if not key.startswith("_")
-            }
-
-        return {
-            "event_type": "app_command",
-            "command_name": command.name,
-            "command_type": "context_menu" if isinstance(command, app_commands.ContextMenu) else "slash_command",
-            "user_id": interaction.user.id,
             "username": str(interaction.user),
-            "guild_id": interaction.guild_id,  # None for DMs
+            "command_name": command_name,
+            "guild_id": interaction.guild_id,
             "guild_name": interaction.guild.name if interaction.guild else None,
             "channel_id": interaction.channel_id,
             "timestamp": interaction.created_at,
@@ -214,10 +312,37 @@ class Telemetry(commands.Cog):
     # HELPER METHODS
     # ========================================================================================
 
+    def _pop_pending(self, interaction_id: int) -> tuple[str, float]:
+        """Pop and return the pending entry for an interaction.
+
+        If the entry doesn't exist (e.g. race condition or missed event),
+        returns a fallback with current time.
+
+        Args:
+            interaction_id: Discord interaction snowflake ID
+
+        Returns:
+            Tuple of (correlation_id, start_time)
+        """
+        if interaction_id in self._pending:
+            return self._pending.pop(interaction_id)
+        return ("unknown", time.monotonic())
+
+    def _cleanup_stale_entries(self) -> None:
+        """Remove pending entries older than the stale threshold.
+
+        Prevents memory leaks from interactions that never get a
+        completion or failure callback.
+        """
+        now = time.monotonic()
+        stale_ids = [
+            iid for iid, (_, start_time) in self._pending.items() if now - start_time > _STALE_THRESHOLD_SECONDS
+        ]
+        for iid in stale_ids:
+            del self._pending[iid]
+
     def _get_interaction_type(self, interaction: discord.Interaction) -> str:
         """Determine the type of interaction (command, button, dropdown, modal, etc).
-
-        Discord has many interaction types. This method converts the enum to a readable string.
 
         Args:
             interaction: The Discord interaction object
@@ -225,10 +350,9 @@ class Telemetry(commands.Cog):
         Returns:
             Human-readable interaction type string
         """
-        # Map Discord's InteractionType enum to readable strings
         type_map = {
             discord.InteractionType.application_command: "slash_command",
-            discord.InteractionType.component: "component",  # Buttons, dropdowns
+            discord.InteractionType.component: "component",
             discord.InteractionType.modal_submit: "modal",
             discord.InteractionType.autocomplete: "autocomplete",
         }
@@ -248,21 +372,15 @@ class Telemetry(commands.Cog):
     def _get_command_name(self, interaction: discord.Interaction) -> str | None:
         """Extract the command name from an interaction.
 
-        For slash commands: Returns the command name (/ping -> "ping")
-        For buttons/dropdowns: Returns the custom_id or None
-        For modals: Returns the custom_id or None
-
         Args:
             interaction: The Discord interaction object
 
         Returns:
             Command name or custom_id, or None if not applicable
         """
-        # For slash commands, use the command attribute
         if interaction.command:
             return interaction.command.name
 
-        # For components (buttons, dropdowns) or modals, use custom_id
         if interaction.data:
             return interaction.data.get("custom_id")
 
@@ -270,12 +388,6 @@ class Telemetry(commands.Cog):
 
     def _extract_interaction_options(self, interaction: discord.Interaction) -> dict[str, Any]:
         """Extract options/parameters from an interaction.
-
-        Different interaction types have different data structures:
-        - Slash commands: Have "options" in data
-        - Buttons: Have "custom_id" in data
-        - Dropdowns: Have "values" in data
-        - Modals: Have "components" with field values in data
 
         Args:
             interaction: The Discord interaction object
@@ -286,24 +398,18 @@ class Telemetry(commands.Cog):
         if not interaction.data:
             return {}
 
-        # Cast to dict to bypass TypedDict validation - Discord's interaction data
-        # structure is more flexible than the typed definitions suggest
         data: dict[str, Any] = interaction.data  # type: ignore[assignment]
         options: dict[str, Any] = {}
 
-        # Handle slash command options (including nested subcommands/subcommand groups)
         if "options" in data:
             self._extract_command_options(data["options"], options)
 
-        # Handle button custom_id
         if "custom_id" in data:
             options["custom_id"] = data["custom_id"]
 
-        # Handle dropdown values
         if "values" in data:
             options["values"] = data["values"]
 
-        # Handle modal components (form fields)
         if "components" in data:
             self._extract_modal_components(data["components"], options)
 
@@ -320,17 +426,14 @@ class Telemetry(commands.Cog):
             prefix: Current prefix for nested options (e.g., "subcommand")
         """
         for opt in option_list:
-            # Build a stable, flattened key like "subcommand.param"
             name = opt.get("name")
             if not name:
                 continue
 
             full_name = f"{prefix}.{name}" if prefix else name
 
-            # Subcommand or subcommand group with nested options
             if "options" in opt and isinstance(opt["options"], list):
                 self._extract_command_options(opt["options"], options, full_name)
-            # Leaf option with a value
             elif "value" in opt:
                 options[full_name] = self._serialize_value(opt.get("value"))
 
@@ -351,94 +454,100 @@ class Telemetry(commands.Cog):
     def _serialize_value(self, value: Any) -> Any:  # noqa: ANN401
         """Convert complex Discord objects to simple serializable types.
 
-        Discord.py uses complex objects (Member, Channel, Role, etc) that can't be
-        easily logged or stored. This method converts them to simple types.
-
-        Why we do this:
-        - Easier to log to console
-        - Easier to serialize to JSON
-        - Easier to store in database (Phase 3)
-        - Preserves only the data we actually need
-
         Args:
             value: Any value from Discord interaction data
 
         Returns:
             Serializable version of the value (int, str, list, dict)
         """
-        # Discord User/Member -> user ID
         if isinstance(value, (discord.User, discord.Member)):
             return value.id
 
-        # Discord Channel -> channel ID
         if isinstance(value, (discord.TextChannel, discord.VoiceChannel, discord.Thread)):
             return value.id
 
-        # Discord Role -> role ID
         if isinstance(value, discord.Role):
             return value.id
 
-        # Lists (recursively serialize)
         if isinstance(value, list):
             return [self._serialize_value(v) for v in value]
 
-        # Dicts (recursively serialize)
         if isinstance(value, dict):
             return {k: self._serialize_value(v) for k, v in value.items()}
 
-        # Everything else (int, str, bool, None) passes through
         return value
 
-    def _log_event(self, event_data: dict[str, Any]) -> None:
-        """Log captured event data to console.
+    # ========================================================================================
+    # LOGGING METHODS
+    # ========================================================================================
 
-        Phase 1: Just console logging
-        Phase 2: Will add to asyncio.Queue
-        Phase 3: Will store in database
+    def _log_interaction(self, event_data: dict[str, Any]) -> None:
+        """Log the full interaction event at DEBUG level.
+
+        Contains all metadata for the interaction. The completion/failure log
+        references this via correlation_id.
 
         Args:
             event_data: Structured event data dict
         """
-        # Format timestamp for readability
         timestamp = event_data["timestamp"].strftime("%Y-%m-%d %H:%M:%S UTC")
-
-        # Build readable log message
-        event_type = event_data["event_type"]
-        user_id = event_data["user_id"]
+        correlation_id = event_data["correlation_id"]
+        interaction_type = event_data["interaction_type"]
+        command_name = event_data.get("command_name", "N/A")
         username = event_data.get("username", "Unknown")
+        user_id = event_data["user_id"]
+        guild_name = event_data.get("guild_name") or "DM"
+        options = event_data.get("options", {})
 
-        if event_type == "interaction":
-            interaction_type = event_data["interaction_type"]
-            command_name = event_data.get("command_name", "N/A")
-            guild_name = event_data.get("guild_name") or "DM"
-            options = event_data.get("options", {})
+        self.log.debug(
+            "[TELEMETRY] Interaction | ID=%s | Type=%s | Command=%s | User=%s(%s) | Guild=%s | Options=%s | Time=%s",
+            correlation_id,
+            interaction_type,
+            command_name,
+            username,
+            user_id,
+            guild_name,
+            options,
+            timestamp,
+        )
 
-            self.log.info(
-                "[TELEMETRY] Interaction | Type=%s | Command=%s | User=%s(%s) | Guild=%s | Options=%s | Time=%s",
-                interaction_type,
+    def _log_completion(
+        self,
+        *,
+        correlation_id: str,
+        command_name: str,
+        status: str,
+        duration_ms: float,
+        error_type: str | None = None,
+    ) -> None:
+        """Log a slim completion/failure record at DEBUG level.
+
+        Only contains correlation_id, command name, status, duration, and
+        optionally error type. Full metadata lives in the interaction log.
+
+        Args:
+            correlation_id: UUID linking to the interaction log
+            command_name: The command that completed/failed
+            status: "success", "user_error", or "internal_error"
+            duration_ms: Execution time in milliseconds
+            error_type: Error class name (only for failures)
+        """
+        if error_type:
+            self.log.debug(
+                "[TELEMETRY] Completion | ID=%s | Command=%s | Status=%s | Error=%s | Duration=%sms",
+                correlation_id,
                 command_name,
-                username,
-                user_id,
-                guild_name,
-                options,
-                timestamp,
+                status,
+                error_type,
+                duration_ms,
             )
-
-        elif event_type == "app_command":
-            command_name = event_data["command_name"]
-            command_type = event_data.get("command_type", "slash_command")
-            guild_name = event_data.get("guild_name") or "DM"
-            options = event_data.get("options", {})
-
-            self.log.info(
-                "[TELEMETRY] AppCommand | Type=%s | Command=%s | User=%s(%s) | Guild=%s | Options=%s | Time=%s",
-                command_type,
+        else:
+            self.log.debug(
+                "[TELEMETRY] Completion | ID=%s | Command=%s | Status=%s | Duration=%sms",
+                correlation_id,
                 command_name,
-                username,
-                user_id,
-                guild_name,
-                options,
-                timestamp,
+                status,
+                duration_ms,
             )
 
 
