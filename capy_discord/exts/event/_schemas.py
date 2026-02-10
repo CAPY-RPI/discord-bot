@@ -36,6 +36,9 @@ class EventSchema(BaseModel):
         if isinstance(value, str):
             value = value.strip()
             if " " in value:
+                # Handle 00:XX AM/PM by converting to 12:XX AM/PM
+                if value.lower().startswith("00:"):
+                    value = "12:" + value[3:]
                 parsed = datetime.strptime(f"{value} +0000", "%I:%M %p %z")
             else:
                 parsed = datetime.strptime(f"{value} +0000", "%H:%M %z")

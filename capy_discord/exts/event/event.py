@@ -507,11 +507,14 @@ class Event(commands.Cog):
 
     def _create_announcement_embed(self, event: EventSchema) -> discord.Embed:
         """Create an announcement embed for an event."""
-        embed = success_embed(
-            "Event Announcement",
-            event.description or "No description provided.",
+        embed = discord.Embed(
+            title=f"📅 {event.event_name}",
+            description=event.description or "No description provided.",
+            color=discord.Color.gold(),
         )
-        self._apply_event_fields(embed, event)
+
+        embed.add_field(name="📍 When", value=self._format_event_time_est(event), inline=False)
+        embed.add_field(name="🗺️ Where", value=event.location or "TBD", inline=False)
 
         embed.add_field(
             name="📋 RSVP",
