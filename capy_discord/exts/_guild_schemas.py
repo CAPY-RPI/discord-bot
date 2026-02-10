@@ -1,34 +1,49 @@
+"""Pydantic models for guild settings used by ModelModal."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from pydantic import BaseModel, Field
 
 
-@dataclass
-class GuildChannels:
-    """Channel destinations used by the bot for various purposes."""
+class ChannelSettingsForm(BaseModel):
+    """Form for configuring guild channel destinations."""
 
-    reports: int | None = None
-    announcements: int | None = None
-    moderator: int | None = None
-    feedback: int | None = None
+    reports: str = Field(default="", title="Reports Channel", description="Channel ID for bug reports")
+    announcements: str = Field(default="", title="Announcements Channel", description="Channel ID for announcements")
+    feedback: str = Field(default="", title="Feedback Channel", description="Channel ID for feedback routing")
 
 
-@dataclass
-class GuildRoles:
-    """Role identifiers used to gate features and permissions."""
+class RoleSettingsForm(BaseModel):
+    """Form for configuring guild role scopes."""
 
-    visitor: str | None = None
-    member: str | None = None
-    eboard: str | None = None
-    admin: str | None = None
-    advisor: str | None = None
-    office_hours: str | None = None
+    admin: str = Field(default="", title="Admin Role", description="Role ID for administrator access")
+    member: str = Field(default="", title="Member Role", description="Role ID for general member access")
 
 
-@dataclass
-class GuildSettings:
-    """Top-level guild configuration model."""
+class AnnouncementChannelForm(BaseModel):
+    """Form for setting the announcement channel."""
 
-    channels: GuildChannels = field(default_factory=GuildChannels)
-    roles: GuildRoles = field(default_factory=GuildRoles)
+    channel: str = Field(default="", title="Announcement Channel", description="Channel ID for global pings")
+
+
+class FeedbackChannelForm(BaseModel):
+    """Form for setting the feedback channel."""
+
+    channel: str = Field(default="", title="Feedback Channel", description="Channel ID for feedback routing")
+
+
+class WelcomeMessageForm(BaseModel):
+    """Form for customizing the onboarding welcome message."""
+
+    message: str = Field(default="", title="Welcome Message", description="Custom welcome message for your guild")
+
+
+class GuildSettings(BaseModel):
+    """Persisted guild settings (not a form — internal state)."""
+
+    reports_channel: int | None = None
+    announcements_channel: int | None = None
+    feedback_channel: int | None = None
+    admin_role: str | None = None
+    member_role: str | None = None
     onboarding_welcome: str | None = None
