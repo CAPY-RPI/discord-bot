@@ -513,8 +513,8 @@ class Event(commands.Cog):
             color=discord.Color.gold(),
         )
 
-        embed.add_field(name="📍 When", value=self._format_event_time_est(event), inline=False)
-        embed.add_field(name="🗺️ Where", value=event.location or "TBD", inline=False)
+        embed.add_field(name="🕐 When", value=self._format_event_time_est(event), inline=False)
+        embed.add_field(name="📍 Where", value=event.location or "TBD", inline=False)
 
         embed.add_field(
             name="📋 RSVP",
