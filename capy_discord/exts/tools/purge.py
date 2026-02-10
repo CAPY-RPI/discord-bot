@@ -24,12 +24,12 @@ class PurgeCog(commands.Cog):
         self.log = logging.getLogger(__name__)
 
     def parse_duration(self, duration: str) -> timedelta | None:
-        """Parse duration string into timedelta. Format: 1d2h3m."""
+        """Parse duration string into timedelta. Format: 1d 2h 3m (spaces optional)."""
         if not duration:
             return None
 
-        pattern = r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?"
-        match = re.match(pattern, duration)
+        pattern = r"(?:(\d+)d)?\s*(?:(\d+)h)?\s*(?:(\d+)m)?"
+        match = re.match(pattern, duration.strip())
         if not match or not any(match.groups()):
             return None
 
@@ -39,36 +39,31 @@ class PurgeCog(commands.Cog):
 
         return timedelta(days=days, hours=hours, minutes=minutes)
 
-    async def _handle_purge_count(self, amount: int, channel: discord.TextChannel) -> tuple[bool, discord.Embed]:
+    async def _handle_purge_count(self, amount: int, channel: discord.TextChannel) -> discord.Embed:
         if amount <= 0:
-            return False, error_embed(description="Please specify a number greater than 0.")
+            return error_embed(description="Please specify a number greater than 0.")
         deleted = await channel.purge(limit=amount)
-        return True, success_embed("Purge Complete", f"Successfully deleted {len(deleted)} messages.")
+        return success_embed("Purge Complete", f"Successfully deleted {len(deleted)} messages.")
 
-    async def _handle_purge_duration(self, duration: str, channel: discord.TextChannel) -> tuple[bool, discord.Embed]:
+    async def _handle_purge_duration(self, duration: str, channel: discord.TextChannel) -> discord.Embed:
         time_delta = self.parse_duration(duration)
         if not time_delta:
-            return (
-                False,
-                error_embed(
-                    description=(
-                        "Invalid duration format.\n"
-                        "Use format: `1d2h3m` (e.g., 1d = 1 day, 2h = 2 hours, 3m = 3 minutes)"
-                    ),
+            return error_embed(
+                description=(
+                    "Invalid duration format.\nUse format: `1d 2h 3m` (e.g., 1d = 1 day, 2h = 2 hours, 3m = 3 minutes)"
                 ),
             )
 
         after_time = datetime.now(UTC) - time_delta
         deleted = await channel.purge(after=after_time)
-        return (
-            True,
-            success_embed("Purge Complete", f"Successfully deleted {len(deleted)} messages from the last {duration}."),
+        return success_embed(
+            "Purge Complete", f"Successfully deleted {len(deleted)} messages from the last {duration}."
         )
 
     @app_commands.command(name="purge", description="Delete messages")
     @app_commands.describe(
         amount="The number of messages to delete (e.g. 10)",
-        duration="The timeframe to delete messages from (e.g. 1h 30m)",
+        duration="The timeframe to delete messages from (e.g. 1h30m, 1h 30m)",
     )
     @app_commands.checks.has_permissions(manage_messages=True)
     async def purge(
@@ -100,12 +95,12 @@ class PurgeCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         if amount is not None:
-            _, embed = await self._handle_purge_count(amount, channel)
+            embed = await self._handle_purge_count(amount, channel)
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         if duration is not None:
-            _, embed = await self._handle_purge_duration(duration, channel)
+            embed = await self._handle_purge_duration(duration, channel)
             await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
