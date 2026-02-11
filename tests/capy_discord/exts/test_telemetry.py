@@ -8,6 +8,7 @@ from discord.ext import commands
 
 from capy_discord.errors import UserFriendlyError
 from capy_discord.exts.core.telemetry import (
+    CommandLatencyStats,
     Telemetry,
     TelemetryEvent,
     _QUEUE_MAX_SIZE,
@@ -281,6 +282,22 @@ def test_record_completion_metrics_latency_stats(cog):
     assert stats.avg_ms == 20.0
     assert stats.min_ms == 10.0
     assert stats.max_ms == 30.0
+
+
+def test_command_latency_stats_zero_observations():
+    stats = CommandLatencyStats()
+    assert stats.count == 0
+    assert stats.min_ms == float("inf")
+    assert stats.max_ms == 0.0
+    assert stats.avg_ms == 0.0
+
+
+def test_record_completion_metrics_missing_duration(cog):
+    cog._record_completion_metrics({"command_name": "ping", "status": "success"})
+
+    m = cog.get_metrics()
+    assert m.completions_by_status["success"] == 1
+    assert "ping" not in m.command_latency
 
 
 def test_dispatch_event_feeds_metrics(cog):

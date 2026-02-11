@@ -23,6 +23,7 @@ Future Phases:
 """
 
 import asyncio
+import copy
 import logging
 import time
 import uuid
@@ -334,8 +335,12 @@ class Telemetry(commands.Cog):
     # ========================================================================================
 
     def get_metrics(self) -> TelemetryMetrics:
-        """Return the current in-memory metrics snapshot."""
-        return self._metrics
+        """Return a snapshot copy of the current in-memory metrics.
+
+        Returns a deep copy so callers cannot accidentally mutate
+        the live internal state.
+        """
+        return copy.deepcopy(self._metrics)
 
     def _record_interaction_metrics(self, data: dict[str, Any]) -> None:
         """Update in-memory counters from an interaction event."""
@@ -360,10 +365,11 @@ class Telemetry(commands.Cog):
         m = self._metrics
         status = data.get("status", "unknown")
         command_name = data.get("command_name", "unknown")
-        duration_ms = data.get("duration_ms", 0.0)
+        duration_ms = data.get("duration_ms")
 
         m.completions_by_status[status] += 1
-        m.command_latency[command_name].record(duration_ms)
+        if duration_ms is not None:
+            m.command_latency[command_name].record(duration_ms)
 
         if status != "success":
             m.command_failures[command_name][status] += 1
