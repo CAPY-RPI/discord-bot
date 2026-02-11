@@ -20,7 +20,7 @@ class Bot(commands.AutoShardedBot):
         await self.load_extensions()
 
     def _get_logger_for_command(
-        self, command: app_commands.Command | app_commands.ContextMenu | None
+        self, command: app_commands.Command | app_commands.ContextMenu | commands.Command | None
     ) -> logging.Logger:
         if command and hasattr(command, "module") and command.module:
             return logging.getLogger(command.module)
@@ -54,6 +54,23 @@ class Bot(commands.AutoShardedBot):
             await interaction.followup.send(embed=embed, ephemeral=True)
         else:
             await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
+        """Handle errors in prefix commands."""
+        actual_error = error
+        if isinstance(error, commands.CommandInvokeError):
+            actual_error = error.original
+
+        if isinstance(actual_error, UserFriendlyError):
+            embed = error_embed(description=actual_error.user_message)
+            await ctx.send(embed=embed)
+            return
+
+        # Generic error handling
+        logger = self._get_logger_for_command(ctx.command)
+        logger.exception("Prefix command error: %s", error)
+        embed = error_embed(description="An unexpected error occurred. Please try again later.")
+        await ctx.send(embed=embed)
 
     async def load_extensions(self) -> None:
         """Load all enabled extensions."""
