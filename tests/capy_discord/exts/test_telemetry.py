@@ -183,3 +183,125 @@ def test_dispatch_unknown_event_type(cog):
 
     cog.log.warning.assert_called_once()
     assert "Unknown telemetry event type" in cog.log.warning.call_args[0][0]
+
+
+# ========================================================================================
+# Phase 2b: In-memory analytics tests
+# ========================================================================================
+
+
+def test_record_interaction_metrics_increments_counters(cog):
+    data = {
+        "interaction_type": "slash_command",
+        "command_name": "ping",
+        "user_id": 42,
+        "guild_id": 100,
+    }
+
+    cog._record_interaction_metrics(data)
+
+    m = cog.get_metrics()
+    assert m.total_interactions == 1
+    assert m.interactions_by_type["slash_command"] == 1
+    assert m.command_invocations["ping"] == 1
+    assert 42 in m.unique_user_ids
+    assert m.guild_interactions[100] == 1
+
+
+def test_record_interaction_metrics_multiple_events(cog):
+    events = [
+        {"interaction_type": "slash_command", "command_name": "ping", "user_id": 1, "guild_id": 10},
+        {"interaction_type": "slash_command", "command_name": "help", "user_id": 1, "guild_id": 10},
+        {"interaction_type": "button", "command_name": "ping", "user_id": 2, "guild_id": 20},
+    ]
+    for data in events:
+        cog._record_interaction_metrics(data)
+
+    m = cog.get_metrics()
+    assert m.total_interactions == 3
+    assert m.command_invocations["ping"] == 2
+    assert m.command_invocations["help"] == 1
+    assert len(m.unique_user_ids) == 2
+    assert len(m.guild_interactions) == 2
+
+
+def test_record_interaction_metrics_dm_no_guild(cog):
+    data = {
+        "interaction_type": "slash_command",
+        "command_name": "ping",
+        "user_id": 42,
+        "guild_id": None,
+    }
+
+    cog._record_interaction_metrics(data)
+
+    m = cog.get_metrics()
+    assert m.total_interactions == 1
+    assert None not in m.guild_interactions
+
+
+def test_record_completion_metrics_success(cog):
+    data = {
+        "command_name": "ping",
+        "status": "success",
+        "duration_ms": 15.0,
+    }
+
+    cog._record_completion_metrics(data)
+
+    m = cog.get_metrics()
+    assert m.completions_by_status["success"] == 1
+    assert m.command_latency["ping"].count == 1
+    assert m.command_latency["ping"].avg_ms == 15.0
+    assert "ping" not in m.command_failures
+
+
+def test_record_completion_metrics_failure(cog):
+    data = {
+        "command_name": "broken",
+        "status": "user_error",
+        "duration_ms": 5.0,
+        "error_type": "UserFriendlyError",
+    }
+
+    cog._record_completion_metrics(data)
+
+    m = cog.get_metrics()
+    assert m.completions_by_status["user_error"] == 1
+    assert m.command_failures["broken"]["user_error"] == 1
+    assert m.error_types["UserFriendlyError"] == 1
+
+
+def test_record_completion_metrics_latency_stats(cog):
+    cog._record_completion_metrics({"command_name": "ping", "status": "success", "duration_ms": 10.0})
+    cog._record_completion_metrics({"command_name": "ping", "status": "success", "duration_ms": 30.0})
+
+    stats = cog.get_metrics().command_latency["ping"]
+    assert stats.count == 2
+    assert stats.avg_ms == 20.0
+    assert stats.min_ms == 10.0
+    assert stats.max_ms == 30.0
+
+
+def test_dispatch_event_feeds_metrics(cog):
+    interaction_event = TelemetryEvent(
+        "interaction",
+        {
+            "interaction_type": "slash_command",
+            "command_name": "ping",
+            "user_id": 42,
+            "guild_id": 100,
+            "correlation_id": "abc123",
+            "timestamp": MagicMock(strftime=MagicMock(return_value="2025-01-01 00:00:00 UTC")),
+            "username": "TestUser",
+        },
+    )
+
+    cog._enqueue(interaction_event)
+    cog._process_pending_events()
+
+    m = cog.get_metrics()
+    assert m.total_interactions == 1
+    assert m.command_invocations["ping"] == 1
+    # Verify logging also happened
+    cog.log.debug.assert_called()
