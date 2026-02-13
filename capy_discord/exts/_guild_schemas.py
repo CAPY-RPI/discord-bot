@@ -45,5 +45,5 @@ class GuildSettings(BaseModel):
     announcements_channel: int | None = None
     feedback_channel: int | None = None
     admin_role: str | None = None
-    member_role: str | None = None
+    member_roles: list[str] = []  # Store multiple member role IDs as strings
     onboarding_welcome: str | None = None
