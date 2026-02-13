@@ -6,7 +6,7 @@ from discord.ext import commands
 
 from capy_discord.ui.forms import ModelModal
 
-from ._guild_schemas import (
+from ._schemas import (
     AnnouncementChannelForm,
     ChannelSettingsForm,
     FeedbackChannelForm,
