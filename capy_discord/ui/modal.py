@@ -22,7 +22,7 @@ class BaseModal(ui.Modal):
 T = TypeVar("T", bound="CallbackModal")
 
 
-class CallbackModal[T](BaseModal):
+class CallbackModal[T: "CallbackModal"](BaseModal):
     """A modal that delegates submission logic to a callback function.
 
     This is useful for decoupling the UI from the business logic.
