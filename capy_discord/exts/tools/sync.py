@@ -80,7 +80,7 @@ class Sync(commands.Cog):
         await ctx.send(description)
 
     @app_commands.command(name="sync", description="Sync application commands")
-    # @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def sync_slash(self, interaction: discord.Interaction) -> None:
         """Sync commands via slash command."""
         await interaction.response.defer(ephemeral=True)
