@@ -529,9 +529,14 @@ class Event(commands.Cog):
     async def _handle_event_submit(self, interaction: discord.Interaction, event: EventSchema) -> None:
         """Process the valid event submission."""
         guild_id = interaction.guild_id
+
+        # Defer if not already done (ModelModal may have sent error)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
         if not guild_id:
             embed = error_embed("No Server", "Events must be created in a server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.edit_original_response(content="", embeds=[embed])
             return
 
         # [DB CALL]: Save event
@@ -543,7 +548,8 @@ class Event(commands.Cog):
         self._apply_event_fields(embed, event)
         now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
         embed.set_footer(text=f"Created: {now}")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        await interaction.edit_original_response(content="", embeds=[embed], view=ui.View())
 
     def _create_event_embed(self, title: str, description: str, event: EventSchema) -> discord.Embed:
         """Helper to build a success-styled event display embed."""
@@ -556,9 +562,14 @@ class Event(commands.Cog):
     ) -> None:
         """Process the event update submission."""
         guild_id = interaction.guild_id
+
+        # Defer if not already done (ModelModal may have sent error)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
         if not guild_id:
             embed = error_embed("No Server", "Events must be updated in a server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.edit_original_response(content="", embeds=[embed])
             return
 
         # [DB CALL]: Update event
@@ -576,7 +587,8 @@ class Event(commands.Cog):
         )
         now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
         embed.set_footer(text=f"Updated: {now}")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        await interaction.edit_original_response(content="", embeds=[embed], view=ui.View())
 
     async def _on_show_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
         """Handle event selection for showing details."""
