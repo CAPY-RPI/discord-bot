@@ -1,5 +1,4 @@
-import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
 import pytest
@@ -20,8 +19,7 @@ def bot():
     intents = discord.Intents.default()
     b = MagicMock(spec=commands.Bot)
     b.intents = intents
-    b.wait_until_ready = MagicMock(return_value=asyncio.Future())
-    b.wait_until_ready.return_value.set_result(None)
+    b.wait_until_ready = AsyncMock(return_value=None)
     return b
 
 
