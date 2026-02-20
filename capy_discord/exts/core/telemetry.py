@@ -1,10 +1,11 @@
 """Telemetry extension for tracking Discord bot interactions.
 
-PHASE 2a: Queue Buffering and Error Categorization
-Builds on Phase 1 event capture by adding:
-- asyncio.Queue to decouple event listeners from I/O (fire-and-forget enqueue)
-- Background consumer task that drains the queue and logs events
-- Error categorization: "user_error" (UserFriendlyError) vs "internal_error" (real bugs)
+PHASE 2b: In-Memory Analytics
+Builds on Phase 2a queue buffering by adding:
+- In-memory metrics dataclasses (TelemetryMetrics, CommandLatencyStats)
+- Real-time counters for interactions, commands, users, guilds, errors
+- Running latency stats (min/max/avg) per command with O(1) memory
+- Public get_metrics() accessor for the /stats command
 
 Key Design Decisions:
 - We capture on_interaction (ALL interactions: commands, buttons, dropdowns, modals)
@@ -14,6 +15,7 @@ Key Design Decisions:
 - Telemetry failures are caught and logged, never crashing the bot
 - Each interaction gets a UUID correlation_id linking interaction and completion logs
 - Command failures are tracked via log_command_failure called from bot error handlers
+- Metrics are in-memory only — reset on bot restart (validated before Phase 3 DB storage)
 
 Future Phases:
 - Phase 3: Add database storage (SQLite or PostgreSQL)
@@ -21,10 +23,13 @@ Future Phases:
 """
 
 import asyncio
+import copy
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import discord
@@ -53,6 +58,54 @@ class TelemetryEvent:
     data: dict[str, Any]
 
 
+@dataclass(slots=True)
+class CommandLatencyStats:
+    """O(1) memory running latency stats for a single command."""
+
+    count: int = 0
+    total_ms: float = 0.0
+    min_ms: float = float("inf")
+    max_ms: float = 0.0
+
+    def record(self, duration_ms: float) -> None:
+        """Record a new latency observation."""
+        self.count += 1
+        self.total_ms += duration_ms
+        self.min_ms = min(self.min_ms, duration_ms)
+        self.max_ms = max(self.max_ms, duration_ms)
+
+    @property
+    def avg_ms(self) -> float:
+        """Return the average latency, or 0.0 if no observations."""
+        return self.total_ms / self.count if self.count else 0.0
+
+
+@dataclass
+class TelemetryMetrics:
+    """All in-memory counters, one instance per bot lifetime."""
+
+    boot_time: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    # Volume
+    total_interactions: int = 0
+    interactions_by_type: defaultdict[str, int] = field(default_factory=lambda: defaultdict(int))
+    command_invocations: defaultdict[str, int] = field(default_factory=lambda: defaultdict(int))
+    unique_user_ids: set[int] = field(default_factory=set)
+    guild_interactions: defaultdict[int, int] = field(default_factory=lambda: defaultdict(int))
+
+    # Health
+    completions_by_status: defaultdict[str, int] = field(default_factory=lambda: defaultdict(int))
+    command_failures: defaultdict[str, defaultdict[str, int]] = field(
+        default_factory=lambda: defaultdict(lambda: defaultdict(int))
+    )
+    error_types: defaultdict[str, int] = field(default_factory=lambda: defaultdict(int))
+
+    # Performance
+    command_latency: defaultdict[str, CommandLatencyStats] = field(
+        default_factory=lambda: defaultdict(CommandLatencyStats)
+    )
+
+
 class Telemetry(commands.Cog):
     """Telemetry Cog for capturing and logging Discord bot interactions.
 
@@ -79,7 +132,8 @@ class Telemetry(commands.Cog):
         # Maps interaction.id -> (correlation_id, start_time_monotonic)
         self._pending: dict[int, tuple[str, float]] = {}
         self._queue: asyncio.Queue[TelemetryEvent] = asyncio.Queue(maxsize=_QUEUE_MAX_SIZE)
-        self.log.info("Telemetry cog initialized - Phase 2a: Queue buffering and error categorization")
+        self._metrics = TelemetryMetrics()
+        self.log.info("Telemetry cog initialized - Phase 2b: In-memory analytics")
 
     # ========================================================================================
     # LIFECYCLE
@@ -140,8 +194,10 @@ class Telemetry(commands.Cog):
         try:
             if event.event_type == "interaction":
                 self._log_interaction(event.data)
+                self._record_interaction_metrics(event.data)
             elif event.event_type == "completion":
                 self._log_completion(**event.data)
+                self._record_completion_metrics(event.data)
             else:
                 self.log.warning("Unknown telemetry event type: %s", event.event_type)
         except Exception:
@@ -273,6 +329,54 @@ class Telemetry(commands.Cog):
 
         except Exception:
             self.log.exception("Failed to capture command failure event")
+
+    # ========================================================================================
+    # ANALYTICS
+    # ========================================================================================
+
+    def get_metrics(self) -> TelemetryMetrics:
+        """Return a snapshot copy of the current in-memory metrics.
+
+        Returns a deep copy so callers cannot accidentally mutate
+        the live internal state.
+        """
+        return copy.deepcopy(self._metrics)
+
+    def _record_interaction_metrics(self, data: dict[str, Any]) -> None:
+        """Update in-memory counters from an interaction event."""
+        m = self._metrics
+        m.total_interactions += 1
+        m.interactions_by_type[data.get("interaction_type", "unknown")] += 1
+
+        command_name = data.get("command_name")
+        if command_name:
+            m.command_invocations[command_name] += 1
+
+        user_id = data.get("user_id")
+        if user_id is not None:
+            m.unique_user_ids.add(user_id)
+
+        guild_id = data.get("guild_id")
+        if guild_id is not None:
+            m.guild_interactions[guild_id] += 1
+
+    def _record_completion_metrics(self, data: dict[str, Any]) -> None:
+        """Update in-memory counters from a completion event."""
+        m = self._metrics
+        status = data.get("status", "unknown")
+        command_name = data.get("command_name", "unknown")
+        duration_ms = data.get("duration_ms")
+
+        m.completions_by_status[status] += 1
+        if duration_ms is not None:
+            m.command_latency[command_name].record(duration_ms)
+
+        if status != "success":
+            m.command_failures[command_name][status] += 1
+
+        error_type = data.get("error_type")
+        if error_type:
+            m.error_types[error_type] += 1
 
     # ========================================================================================
     # DATA EXTRACTION METHODS
