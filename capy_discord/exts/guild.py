@@ -1,4 +1,5 @@
 import logging
+from typing import Literal
 
 import discord
 from discord import app_commands
@@ -56,15 +57,46 @@ class GuildCog(commands.Cog):
             )
             return
         settings = self._ensure_settings(interaction.guild.id)
-
         if reports is not None:
             settings.reports_channel = reports.id
         if announcements is not None:
             settings.announcements_channel = announcements.id
         if feedback is not None:
             settings.feedback_channel = feedback.id
-
         await interaction.response.send_message("✅ Channel settings saved.", ephemeral=True)
+
+    @guild.command(name="channels-clear", description="Clear saved channel IDs")
+    @app_commands.guild_only()
+    @app_commands.describe(target="Which channel setting to clear")
+    @app_commands.choices(
+        target=[
+            app_commands.Choice(name="reports", value="reports"),
+            app_commands.Choice(name="announcements", value="announcements"),
+            app_commands.Choice(name="feedback", value="feedback"),
+            app_commands.Choice(name="all", value="all"),
+        ]
+    )
+    async def guild_channels_clear(
+        self,
+        interaction: discord.Interaction,
+        target: Literal["reports", "announcements", "feedback", "all"],
+    ) -> None:
+        """Clear one or all saved channel settings."""
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=error_embed(description="This command can only be used in a server (not in DMs)."),
+                ephemeral=True,
+            )
+            return
+
+        settings = self._ensure_settings(interaction.guild.id)
+        if target in {"reports", "all"}:
+            settings.reports_channel = None
+        if target in {"announcements", "all"}:
+            settings.announcements_channel = None
+        if target in {"feedback", "all"}:
+            settings.feedback_channel = None
+        await interaction.response.send_message(f"✅ Cleared channel setting(s): {target}.", ephemeral=True)
 
     @guild.command(name="roles", description="Set roles in one line")
     @app_commands.guild_only()
@@ -83,19 +115,47 @@ class GuildCog(commands.Cog):
             )
             return
         settings = self._ensure_settings(interaction.guild.id)
-
         if admin is not None:
             settings.admin_role = str(admin.id)
         if member is not None:
             member_id = str(member.id)
             if member_id not in settings.member_roles:
                 settings.member_roles.append(member_id)
-
         await interaction.response.send_message("✅ Role settings saved.", ephemeral=True)
+
+    @guild.command(name="roles-clear", description="Clear saved role settings")
+    @app_commands.guild_only()
+    @app_commands.describe(target="Which role setting to clear")
+    @app_commands.choices(
+        target=[
+            app_commands.Choice(name="admin", value="admin"),
+            app_commands.Choice(name="member_roles", value="member_roles"),
+            app_commands.Choice(name="all", value="all"),
+        ]
+    )
+    async def guild_roles_clear(
+        self,
+        interaction: discord.Interaction,
+        target: Literal["admin", "member_roles", "all"],
+    ) -> None:
+        """Clear one or all saved role settings."""
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=error_embed(description="This command can only be used in a server (not in DMs)."),
+                ephemeral=True,
+            )
+            return
+
+        settings = self._ensure_settings(interaction.guild.id)
+        if target in {"admin", "all"}:
+            settings.admin_role = None
+        if target in {"member_roles", "all"}:
+            settings.member_roles.clear()
+        await interaction.response.send_message(f"✅ Cleared role setting(s): {target}.", ephemeral=True)
 
     @guild.command(name="onboarding", description="Set the onboarding welcome message")
     @app_commands.guild_only()
-    @app_commands.describe(message="Welcome message shown during onboarding")
+    @app_commands.describe(message="Welcome message shown during onboarding. Use {user} to reference interacting user.")
     async def guild_onboarding(self, interaction: discord.Interaction, message: str | None = None) -> None:
         """Customize onboarding message."""
         if interaction.guild is None:
@@ -169,7 +229,7 @@ class GuildCog(commands.Cog):
             f"Reports Channel: {reports}\n"
             f"Feedback Channel: {feedback}\n"
             f"Admin Role: {admin_role}\n"
-            f"Member Role: {member_role}\n"
+            f"Member Roles: {member_role}\n"
             f"Onboarding Welcome: {onboarding}"
         )
 
