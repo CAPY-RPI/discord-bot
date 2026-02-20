@@ -48,6 +48,7 @@ class GuildCog(commands.Cog):
             app_commands.Choice(name="announcement", value="announcement"),
             app_commands.Choice(name="feedback", value="feedback"),
             app_commands.Choice(name="onboarding", value="onboarding"),
+            app_commands.Choice(name="summary", value="summary"),
         ]
     )
     @app_commands.guild_only()
@@ -69,6 +70,8 @@ class GuildCog(commands.Cog):
             await self._open_feedback(interaction, settings)
         elif action == "onboarding":
             await self._open_onboarding(interaction, settings)
+        elif action == "summary":
+            await self._show_summary(interaction, settings)
 
     # -- Modal launchers -----------------------------------------------------
 
@@ -89,7 +92,7 @@ class GuildCog(commands.Cog):
 
     async def _open_roles(self, interaction: discord.Interaction, settings: GuildSettings) -> None:
         """Launch the role settings modal pre-filled with current values."""
-        initial = {"admin": settings.admin_role, "member": settings.member_role}
+        initial = {"admin": settings.admin_role, "member": ", ".join(settings.member_roles)}
         modal = ModelModal(
             model_cls=RoleSettingsForm, callback=self._handle_roles, title="Role Settings", initial_data=initial
         )
@@ -149,7 +152,7 @@ class GuildCog(commands.Cog):
             return
         settings = self._ensure_settings(interaction.guild.id)
         settings.admin_role = form.admin or None
-        settings.member_role = form.member or None
+        settings.member_roles = [form.member] if form.member else []
         await interaction.response.send_message("✅ Role settings saved.", ephemeral=True)
 
     async def _handle_announcement(self, interaction: discord.Interaction, form: AnnouncementChannelForm) -> None:
@@ -178,6 +181,89 @@ class GuildCog(commands.Cog):
         settings = self._ensure_settings(interaction.guild.id)
         settings.onboarding_welcome = form.message or None
         await interaction.response.send_message("✅ Welcome message updated.", ephemeral=True)
+
+    @app_commands.command(name="set_channel", description="Set a channel for a specific purpose")
+    @app_commands.describe(channel="The channel to set")
+    async def set_channel(self, interaction: discord.Interaction, channel: discord.TextChannel) -> None:
+        """Set a channel by mentioning it."""
+        if not interaction.guild:
+            await interaction.response.send_message("This must be used in a server.", ephemeral=True)
+            return
+
+        settings = self._ensure_settings(interaction.guild.id)
+        settings.reports_channel = channel.id  # Example: Assigning to reports_channel
+        await interaction.response.send_message(f"\u2705 Channel {channel.mention} has been set!", ephemeral=True)
+
+    @app_commands.command(name="set_role", description="Set a role for a specific purpose")
+    @app_commands.describe(
+        role_type="The type of role to set (admin or member)",
+        role="The role to set",
+        action="Action to perform (add or remove, only for member roles)",
+    )
+    @app_commands.choices(
+        role_type=[
+            app_commands.Choice(name="admin", value="admin"),
+            app_commands.Choice(name="member", value="member"),
+        ],
+        action=[
+            app_commands.Choice(name="add", value="add"),
+            app_commands.Choice(name="remove", value="remove"),
+        ],
+    )
+    async def set_role(
+        self,
+        interaction: discord.Interaction,
+        role_type: str,
+        role: discord.Role,
+        action: str = "add",  # Default to "add" for member roles
+    ) -> None:
+        """Set a role by mentioning it."""
+        if not interaction.guild:
+            await interaction.response.send_message("This must be used in a server.", ephemeral=True)
+            return
+
+        settings = self._ensure_settings(interaction.guild.id)
+
+        if role_type == "admin":
+            settings.admin_role = str(role.id)
+            await interaction.response.send_message(f"✅ Admin role set to {role.mention}!", ephemeral=True)
+        elif role_type == "member":
+            if action == "add":
+                if str(role.id) not in settings.member_roles:
+                    settings.member_roles.append(str(role.id))
+                    await interaction.response.send_message(f"✅ Member role {role.mention} added!", ephemeral=True)
+                else:
+                    await interaction.response.send_message(
+                        f"⚠️ {role.mention} is already a member role.", ephemeral=True
+                    )
+            elif action == "remove":
+                if str(role.id) in settings.member_roles:
+                    settings.member_roles.remove(str(role.id))
+                    await interaction.response.send_message(f"✅ Member role {role.mention} removed!", ephemeral=True)
+                else:
+                    await interaction.response.send_message(f"⚠️ {role.mention} is not a member role.", ephemeral=True)
+
+    async def _show_summary(self, interaction: discord.Interaction, settings: GuildSettings) -> None:
+        """Display a summary of the current guild settings."""
+
+        def _ch(cid: int | None) -> str:
+            return f"<#{cid}>" if cid else "Not set"
+
+        def _role(rid: str | None) -> str:
+            return f"<@&{rid}>" if rid else "Not set"
+
+        member_roles = ", ".join([f"<@&{rid}>" for rid in settings.member_roles]) or "Not set"
+
+        summary = (
+            f"**Current Guild Settings:**\n"
+            f"- Announcements Channel: {_ch(settings.announcements_channel)}\n"
+            f"- Reports Channel: {_ch(settings.reports_channel)}\n"
+            f"- Feedback Channel: {_ch(settings.feedback_channel)}\n"
+            f"- Admin Role: {_role(settings.admin_role)}\n"
+            f"- Member Roles: {member_roles}\n"
+            f"- Onboarding Welcome: {settings.onboarding_welcome or 'Not set'}"
+        )
+        await interaction.response.send_message(summary, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
