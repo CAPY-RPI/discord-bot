@@ -600,7 +600,7 @@ class Event(commands.Cog):
             try:
                 await interaction.response.edit_message(content="", embed=embed, view=None)
             except discord.HTTPException:
-                self.log.warning("Failed to edit retry message; falling back to ephemeral response")
+                self.log.warning("Failed to edit previous modal validation message; falling back to ephemeral response")
             else:
                 return
 
