@@ -30,12 +30,18 @@ class EventDropdownSelect(ui.Select["EventDropdownView"]):
         self.view_ref = view
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        """Handle selection by delegating to view's callback."""
+        """Store selection and wait for user confirmation."""
         event_idx = int(self.values[0])
+        self.view_ref.selected_event_idx = event_idx
+        self.view_ref.confirm.disabled = False
+
         selected_event = self.view_ref.event_list[event_idx]
-        self.view_ref.selected = True
-        await self.view_ref.on_select(interaction, selected_event)
-        self.view_ref.stop()
+        await interaction.response.edit_message(
+            content=(
+                f"Selected: **{selected_event.event_name}**\nClick **Confirm** to continue or **Cancel** to abort."
+            ),
+            view=self.view_ref,
+        )
 
 
 class EventDropdownView(BaseView):
@@ -62,12 +68,27 @@ class EventDropdownView(BaseView):
         self.on_select = on_select_callback
         self.cancelled = False
         self.selected = False
+        self.selected_event_idx: int | None = None
 
         if not events:
             return
 
         options = [discord.SelectOption(label=event.event_name[:100], value=str(i)) for i, event in enumerate(events)]
         self.add_item(EventDropdownSelect(options=options, view=self, placeholder=placeholder))
+        self.confirm.disabled = True
+
+    @ui.button(label="Confirm", style=discord.ButtonStyle.success, row=1)
+    async def confirm(self, interaction: discord.Interaction, _button: ui.Button) -> None:
+        """Confirm selected event and run callback."""
+        if self.selected_event_idx is None:
+            embed = error_embed("No Selection", "Please select an event first.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        selected_event = self.event_list[self.selected_event_idx]
+        self.selected = True
+        await self.on_select(interaction, selected_event)
+        self.stop()
 
     @ui.button(label="Cancel", style=discord.ButtonStyle.primary, row=1)
     async def cancel(self, interaction: discord.Interaction, _button: ui.Button) -> None:
