@@ -33,6 +33,7 @@ class EventDropdownSelect(ui.Select["EventDropdownView"]):
         """Handle selection by delegating to view's callback."""
         event_idx = int(self.values[0])
         selected_event = self.view_ref.event_list[event_idx]
+        self.view_ref.selected = True
         await self.view_ref.on_select(interaction, selected_event)
         self.view_ref.stop()
 
@@ -55,11 +56,12 @@ class EventDropdownView(BaseView):
             placeholder: Placeholder text for the dropdown.
             on_select_callback: Async callback to handle selection.
         """
-        super().__init__(timeout=60)
+        super().__init__(timeout=180)
         self.event_list = events
         self.cog = cog
         self.on_select = on_select_callback
         self.cancelled = False
+        self.selected = False
 
         if not events:
             return
@@ -81,7 +83,7 @@ class ConfirmDeleteView(BaseView):
 
     def __init__(self) -> None:
         """Initialize the ConfirmDeleteView."""
-        super().__init__(timeout=60)
+        super().__init__(timeout=180)
         self.value: bool | None = None
 
     @ui.button(label="Delete", style=discord.ButtonStyle.danger)
@@ -330,6 +332,15 @@ class Event(commands.Cog):
         await interaction.followup.send(content=f"Select an event to {action_name}:", view=view, ephemeral=True)
 
         await view.wait()
+
+        if view.cancelled or view.selected:
+            return
+
+        timeout_embed = error_embed(
+            "Selection Timed Out",
+            f"No event was selected in time. Please run `/event {action_name}` again.",
+        )
+        await interaction.followup.send(embed=timeout_embed, ephemeral=True)
 
     @staticmethod
     def _event_datetime(event: EventSchema) -> datetime:
@@ -638,6 +649,12 @@ class Event(commands.Cog):
 
             success = success_embed("Event Deleted", "The event has been deleted successfully!")
             await interaction.followup.send(embed=success, ephemeral=True)
+        elif view.value is None:
+            timeout_embed = error_embed(
+                "Deletion Timed Out",
+                "No confirmation was received in time. The event was not deleted.",
+            )
+            await interaction.followup.send(embed=timeout_embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
