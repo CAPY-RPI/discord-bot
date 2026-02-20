@@ -26,15 +26,22 @@ class EventDropdownSelect(ui.Select["EventDropdownView"]):
         placeholder: str,
     ) -> None:
         """Initialize the select."""
-        super().__init__(placeholder=placeholder, options=options)
+        super().__init__(placeholder=placeholder, options=options, row=0)
         self.view_ref = view
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        """Handle selection by delegating to view's callback."""
+        """Store selection and wait for user confirmation."""
         event_idx = int(self.values[0])
+        self.view_ref.selected_event_idx = event_idx
+        self.view_ref.confirm.disabled = False
+
         selected_event = self.view_ref.event_list[event_idx]
-        await self.view_ref.on_select(interaction, selected_event)
-        self.view_ref.stop()
+        await interaction.response.edit_message(
+            content=(
+                f"Selected: **{selected_event.event_name}**\nClick **Confirm** to continue or **Cancel** to abort."
+            ),
+            view=self.view_ref,
+        )
 
 
 class EventDropdownView(BaseView):
@@ -55,16 +62,41 @@ class EventDropdownView(BaseView):
             placeholder: Placeholder text for the dropdown.
             on_select_callback: Async callback to handle selection.
         """
-        super().__init__(timeout=60)
+        super().__init__(timeout=180)
         self.event_list = events
         self.cog = cog
         self.on_select = on_select_callback
+        self.cancelled = False
+        self.selected = False
+        self.selected_event_idx: int | None = None
 
         if not events:
             return
 
         options = [discord.SelectOption(label=event.event_name[:100], value=str(i)) for i, event in enumerate(events)]
         self.add_item(EventDropdownSelect(options=options, view=self, placeholder=placeholder))
+        self.confirm.disabled = True
+
+    @ui.button(label="Confirm", style=discord.ButtonStyle.success, row=1)
+    async def confirm(self, interaction: discord.Interaction, _button: ui.Button) -> None:
+        """Confirm selected event and run callback."""
+        if self.selected_event_idx is None:
+            embed = error_embed("No Selection", "Please select an event first.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        selected_event = self.event_list[self.selected_event_idx]
+        self.selected = True
+        await self.on_select(interaction, selected_event)
+        self.stop()
+
+    @ui.button(label="Cancel", style=discord.ButtonStyle.primary, row=1)
+    async def cancel(self, interaction: discord.Interaction, _button: ui.Button) -> None:
+        """Cancel the event selection flow."""
+        self.cancelled = True
+        self.disable_all_items()
+        await interaction.response.edit_message(content="Event selection cancelled.", view=self)
+        self.stop()
 
 
 class ConfirmDeleteView(BaseView):
@@ -72,7 +104,7 @@ class ConfirmDeleteView(BaseView):
 
     def __init__(self) -> None:
         """Initialize the ConfirmDeleteView."""
-        super().__init__(timeout=60)
+        super().__init__(timeout=180)
         self.value: bool | None = None
 
     @ui.button(label="Delete", style=discord.ButtonStyle.danger)
@@ -322,6 +354,15 @@ class Event(commands.Cog):
 
         await view.wait()
 
+        if view.cancelled or view.selected:
+            return
+
+        timeout_embed = error_embed(
+            "Selection Timed Out",
+            f"No event was selected in time. Please run `/event {action_name}` again.",
+        )
+        await interaction.followup.send(embed=timeout_embed, ephemeral=True)
+
     @staticmethod
     def _event_datetime(event: EventSchema) -> datetime:
         """Convert event date and time to a timezone-aware datetime in UTC.
@@ -530,13 +571,9 @@ class Event(commands.Cog):
         """Process the valid event submission."""
         guild_id = interaction.guild_id
 
-        # Defer if not already done (ModelModal may have sent error)
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
-
         if not guild_id:
             embed = error_embed("No Server", "Events must be created in a server.")
-            await interaction.edit_original_response(content="", embeds=[embed])
+            await self._respond_from_modal(interaction, embed)
             return
 
         # [DB CALL]: Save event
@@ -549,7 +586,7 @@ class Event(commands.Cog):
         now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
         embed.set_footer(text=f"Created: {now}")
 
-        await interaction.edit_original_response(content="", embeds=[embed], view=ui.View())
+        await self._respond_from_modal(interaction, embed)
 
     def _create_event_embed(self, title: str, description: str, event: EventSchema) -> discord.Embed:
         """Helper to build a success-styled event display embed."""
@@ -557,19 +594,30 @@ class Event(commands.Cog):
         self._apply_event_fields(embed, event)
         return embed
 
+    async def _respond_from_modal(self, interaction: discord.Interaction, embed: discord.Embed) -> None:
+        """Reply for modal submissions, preferring to edit prior validation messages."""
+        if not interaction.response.is_done() and interaction.message is not None:
+            try:
+                await interaction.response.edit_message(content="", embed=embed, view=None)
+            except discord.HTTPException:
+                self.log.warning("Failed to edit previous modal validation message; falling back to ephemeral response")
+            else:
+                return
+
+        if not interaction.response.is_done():
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        else:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
     async def _handle_event_update(
         self, interaction: discord.Interaction, updated_event: EventSchema, original_event: EventSchema
     ) -> None:
         """Process the event update submission."""
         guild_id = interaction.guild_id
 
-        # Defer if not already done (ModelModal may have sent error)
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True)
-
         if not guild_id:
             embed = error_embed("No Server", "Events must be updated in a server.")
-            await interaction.edit_original_response(content="", embeds=[embed])
+            await self._respond_from_modal(interaction, embed)
             return
 
         # [DB CALL]: Update event
@@ -588,7 +636,7 @@ class Event(commands.Cog):
         now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
         embed.set_footer(text=f"Updated: {now}")
 
-        await interaction.edit_original_response(content="", embeds=[embed], view=ui.View())
+        await self._respond_from_modal(interaction, embed)
 
     async def _on_show_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
         """Handle event selection for showing details."""
@@ -622,6 +670,12 @@ class Event(commands.Cog):
 
             success = success_embed("Event Deleted", "The event has been deleted successfully!")
             await interaction.followup.send(embed=success, ephemeral=True)
+        elif view.value is None:
+            timeout_embed = error_embed(
+                "Deletion Timed Out",
+                "No confirmation was received in time. The event was not deleted.",
+            )
+            await interaction.followup.send(embed=timeout_embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
