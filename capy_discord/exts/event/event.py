@@ -26,7 +26,7 @@ class EventDropdownSelect(ui.Select["EventDropdownView"]):
         placeholder: str,
     ) -> None:
         """Initialize the select."""
-        super().__init__(placeholder=placeholder, options=options)
+        super().__init__(placeholder=placeholder, options=options, row=0)
         self.view_ref = view
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -59,12 +59,21 @@ class EventDropdownView(BaseView):
         self.event_list = events
         self.cog = cog
         self.on_select = on_select_callback
+        self.cancelled = False
 
         if not events:
             return
 
         options = [discord.SelectOption(label=event.event_name[:100], value=str(i)) for i, event in enumerate(events)]
         self.add_item(EventDropdownSelect(options=options, view=self, placeholder=placeholder))
+
+    @ui.button(label="Cancel", style=discord.ButtonStyle.primary, row=1)
+    async def cancel(self, interaction: discord.Interaction, _button: ui.Button) -> None:
+        """Cancel the event selection flow."""
+        self.cancelled = True
+        self.disable_all_items()
+        await interaction.response.edit_message(content="Event selection cancelled.", view=self)
+        self.stop()
 
 
 class ConfirmDeleteView(BaseView):
