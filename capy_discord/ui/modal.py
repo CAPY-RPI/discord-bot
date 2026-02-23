@@ -1,6 +1,6 @@
 import logging
-from collections.abc import Callable
-from typing import Any, TypeVar
+from collections.abc import Awaitable, Callable
+from typing import Any, Self
 
 import discord
 from discord import ui
@@ -19,10 +19,7 @@ class BaseModal(ui.Modal):
         self.log = logging.getLogger(__name__)
 
 
-T = TypeVar("T", bound="CallbackModal")
-
-
-class CallbackModal[T](BaseModal):
+class CallbackModal(BaseModal):
     """A modal that delegates submission logic to a callback function.
 
     This is useful for decoupling the UI from the business logic.
@@ -30,7 +27,7 @@ class CallbackModal[T](BaseModal):
 
     def __init__(
         self,
-        callback: Callable[[discord.Interaction, T], Any],
+        callback: Callable[[discord.Interaction, Self], Awaitable[Any]],
         *,
         title: str,
         timeout: float | None = None,
