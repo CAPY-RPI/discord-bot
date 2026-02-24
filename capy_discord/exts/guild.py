@@ -33,16 +33,23 @@ class GuildCog(commands.Cog):
             self._store[guild_id] = GuildSettings()
         return self._store[guild_id]
 
-    guild = app_commands.Group(name="guild", description="Manage guild settings (single-line)")
+    guild = app_commands.Group(name="guild", description="Manage guild settings")
+    channels_group = app_commands.Group(name="channels", description="Manage guild channel settings", parent=guild)
+    roles_group = app_commands.Group(name="roles", description="Manage guild role settings", parent=guild)
+    onboarding_group = app_commands.Group(
+        name="onboarding",
+        description="Manage onboarding settings",
+        parent=guild,
+    )
 
-    @guild.command(name="channels", description="Set channel IDs in one line")
+    @channels_group.command(name="set", description="Set channel destinations in one command")
     @app_commands.guild_only()
     @app_commands.describe(
         reports="Reports channel",
         announcements="Announcements channel",
         feedback="Feedback channel",
     )
-    async def guild_channels(
+    async def guild_channels_set(
         self,
         interaction: discord.Interaction,
         reports: discord.TextChannel | None = None,
@@ -65,7 +72,7 @@ class GuildCog(commands.Cog):
             settings.feedback_channel = feedback.id
         await interaction.response.send_message("✅ Channel settings saved.", ephemeral=True)
 
-    @guild.command(name="channels-clear", description="Clear saved channel IDs")
+    @channels_group.command(name="clear", description="Clear saved channel settings")
     @app_commands.guild_only()
     @app_commands.describe(target="Which channel setting to clear")
     @app_commands.choices(
@@ -98,10 +105,10 @@ class GuildCog(commands.Cog):
             settings.feedback_channel = None
         await interaction.response.send_message(f"✅ Cleared channel setting(s): {target}.", ephemeral=True)
 
-    @guild.command(name="roles", description="Set roles in one line")
+    @roles_group.command(name="set", description="Set role settings in one command")
     @app_commands.guild_only()
     @app_commands.describe(admin="Admin role", member="Member role")
-    async def guild_roles(
+    async def guild_roles_set(
         self,
         interaction: discord.Interaction,
         admin: discord.Role | None = None,
@@ -123,7 +130,7 @@ class GuildCog(commands.Cog):
                 settings.member_roles.append(member_id)
         await interaction.response.send_message("✅ Role settings saved.", ephemeral=True)
 
-    @guild.command(name="roles-clear", description="Clear saved role settings")
+    @roles_group.command(name="clear", description="Clear saved role settings")
     @app_commands.guild_only()
     @app_commands.describe(target="Which role setting to clear")
     @app_commands.choices(
@@ -153,10 +160,10 @@ class GuildCog(commands.Cog):
             settings.member_roles.clear()
         await interaction.response.send_message(f"✅ Cleared role setting(s): {target}.", ephemeral=True)
 
-    @guild.command(name="onboarding", description="Set the onboarding welcome message")
+    @onboarding_group.command(name="set", description="Set the onboarding welcome message")
     @app_commands.guild_only()
     @app_commands.describe(message="Welcome message shown during onboarding. Use {user} to reference interacting user.")
-    async def guild_onboarding(self, interaction: discord.Interaction, message: str | None = None) -> None:
+    async def guild_onboarding_set(self, interaction: discord.Interaction, message: str) -> None:
         """Customize onboarding message."""
         if interaction.guild is None:
             await interaction.response.send_message(
@@ -166,14 +173,7 @@ class GuildCog(commands.Cog):
             return
         settings = self._ensure_settings(interaction.guild.id)
 
-        settings.onboarding_welcome = message or None
-
-        if not settings.onboarding_welcome:
-            await interaction.response.send_message(
-                "✅ Welcome message cleared. (No onboarding message will be sent.)",
-                ephemeral=True,
-            )
-            return
+        settings.onboarding_welcome = message
 
         # A simple "test run" preview:
         # - let you use {user} in the template
@@ -185,6 +185,23 @@ class GuildCog(commands.Cog):
             ephemeral=True,
         )
         await interaction.followup.send(preview, ephemeral=True, allowed_mentions=discord.AllowedMentions(users=True))
+
+    @onboarding_group.command(name="clear", description="Clear the onboarding welcome message")
+    @app_commands.guild_only()
+    async def guild_onboarding_clear(self, interaction: discord.Interaction) -> None:
+        """Clear onboarding welcome message."""
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                embed=error_embed(description="This command can only be used in a server (not in DMs)."),
+                ephemeral=True,
+            )
+            return
+        settings = self._ensure_settings(interaction.guild.id)
+        settings.onboarding_welcome = None
+        await interaction.response.send_message(
+            "✅ Welcome message cleared. (No onboarding message will be sent.)",
+            ephemeral=True,
+        )
 
     @guild.command(name="summary", description="Return a summary of current guild settings")
     @app_commands.guild_only()
