@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from json import JSONDecodeError
 from typing import Any, NotRequired, Required, TypedDict, cast
 
 import httpx
@@ -9,6 +10,10 @@ import httpx
 HTTP_STATUS_OK = 200
 HTTP_STATUS_CREATED = 201
 HTTP_STATUS_NO_CONTENT = 204
+HTTP_STATUS_FOUND = 302
+HTTP_STATUS_BAD_REQUEST = 400
+HTTP_STATUS_UNAUTHORIZED = 401
+HTTP_STATUS_FORBIDDEN = 403
 HTTP_STATUS_NOT_FOUND = 404
 
 
@@ -101,6 +106,25 @@ class EventRegistrationResponse(TypedDict, total=False):
     date_registered: str
 
 
+class AddMemberRequest(TypedDict, total=False):
+    """Represents organization member creation payloads."""
+
+    uid: Required[str]
+    is_admin: bool
+
+
+class OrganizationMemberResponse(TypedDict, total=False):
+    """Represents organization member response payloads."""
+
+    uid: str
+    first_name: str
+    last_name: str
+    email: str
+    is_admin: bool
+    date_joined: str
+    last_active: str
+
+
 class CreateOrganizationRequest(TypedDict, total=False):
     """Represents organization creation payloads."""
 
@@ -121,6 +145,50 @@ class OrganizationResponse(TypedDict, total=False):
     name: str
     date_created: str
     date_modified: str
+
+
+class UpdateUserRequest(TypedDict, total=False):
+    """Represents user update payloads."""
+
+    first_name: str
+    last_name: str
+    school_email: str
+    personal_email: str
+    phone: str
+    grad_year: int
+    role: str
+
+
+class UserResponse(TypedDict, total=False):
+    """Represents user profile response payloads."""
+
+    uid: str
+    first_name: str
+    last_name: str
+    school_email: str
+    personal_email: str
+    phone: str
+    grad_year: int
+    role: str
+    date_created: str
+    date_modified: str
+
+
+class UserAuthResponse(TypedDict, total=False):
+    """Represents authenticated user payloads."""
+
+    uid: str
+    first_name: str
+    last_name: str
+    email: str
+    role: str
+
+
+class AuthResponse(TypedDict, total=False):
+    """Represents auth response payloads."""
+
+    token: str
+    user: UserAuthResponse
 
 
 @dataclass(slots=True)
@@ -190,6 +258,42 @@ class BackendAPIClient:
         await self._client.aclose()
         self._started = False
 
+    async def __aenter__(self) -> BackendAPIClient:
+        """Enter context manager and mark client ready."""
+        await self.start()
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        """Exit context manager and close underlying HTTP client."""
+        await self.close()
+
+    @property
+    def is_started(self) -> bool:
+        """Whether this client has been initialized and is ready."""
+        return self._started
+
+    async def auth_me(self) -> UserAuthResponse:
+        """Call `GET /auth/me`."""
+        payload = await self._request("GET", "/auth/me")
+        return cast("UserAuthResponse", _typed_dict(payload))
+
+    async def auth_refresh(self) -> AuthResponse:
+        """Call `POST /auth/refresh`."""
+        payload = await self._request("POST", "/auth/refresh")
+        return cast("AuthResponse", _typed_dict(payload))
+
+    async def auth_logout(self) -> None:
+        """Call `POST /auth/logout`."""
+        await self._request("POST", "/auth/logout", expected_statuses={HTTP_STATUS_NO_CONTENT})
+
+    async def auth_google_redirect(self) -> None:
+        """Call `GET /auth/google` expecting redirect status."""
+        await self._request("GET", "/auth/google", expected_statuses={HTTP_STATUS_FOUND})
+
+    async def auth_microsoft_redirect(self) -> None:
+        """Call `GET /auth/microsoft` expecting redirect status."""
+        await self._request("GET", "/auth/microsoft", expected_statuses={HTTP_STATUS_FOUND})
+
     async def bot_me(self) -> BotTokenResponse:
         """Call `GET /bot/me`."""
         payload = await self._request("GET", "/bot/me")
@@ -211,8 +315,20 @@ class BackendAPIClient:
 
     async def list_events(self, *, limit: int | None = None, offset: int | None = None) -> list[EventResponse]:
         """Call `GET /events`."""
-        params = _optional_params(limit=limit, offset=offset)
+        params = _pagination_params(limit=limit, offset=offset)
         payload = await self._request("GET", "/events", params=params)
+        return cast("list[EventResponse]", _typed_list(payload))
+
+    async def list_events_by_organization(
+        self,
+        organization_id: str,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[EventResponse]:
+        """Call `GET /events/org/{oid}`."""
+        params = _pagination_params(limit=limit, offset=offset)
+        payload = await self._request("GET", f"/events/org/{organization_id}", params=params)
         return cast("list[EventResponse]", _typed_list(payload))
 
     async def get_event(self, event_id: str) -> EventResponse:
@@ -265,7 +381,7 @@ class BackendAPIClient:
         offset: int | None = None,
     ) -> list[OrganizationResponse]:
         """Call `GET /organizations`."""
-        params = _optional_params(limit=limit, offset=offset)
+        params = _pagination_params(limit=limit, offset=offset)
         payload = await self._request("GET", "/organizations", params=params)
         return cast("list[OrganizationResponse]", _typed_list(payload))
 
@@ -296,9 +412,55 @@ class BackendAPIClient:
         offset: int | None = None,
     ) -> list[EventResponse]:
         """Call `GET /organizations/{oid}/events`."""
-        params = _optional_params(limit=limit, offset=offset)
+        params = _pagination_params(limit=limit, offset=offset)
         payload = await self._request("GET", f"/organizations/{organization_id}/events", params=params)
         return cast("list[EventResponse]", _typed_list(payload))
+
+    async def list_organization_members(self, organization_id: str) -> list[OrganizationMemberResponse]:
+        """Call `GET /organizations/{oid}/members`."""
+        payload = await self._request("GET", f"/organizations/{organization_id}/members")
+        return cast("list[OrganizationMemberResponse]", _typed_list(payload))
+
+    async def add_organization_member(self, organization_id: str, data: AddMemberRequest) -> None:
+        """Call `POST /organizations/{oid}/members`."""
+        await self._request(
+            "POST",
+            f"/organizations/{organization_id}/members",
+            json_body=data,
+            expected_statuses={HTTP_STATUS_CREATED},
+        )
+
+    async def remove_organization_member(self, organization_id: str, user_id: str) -> None:
+        """Call `DELETE /organizations/{oid}/members/{uid}`."""
+        await self._request(
+            "DELETE",
+            f"/organizations/{organization_id}/members/{user_id}",
+            expected_statuses={HTTP_STATUS_NO_CONTENT},
+        )
+
+    async def get_user(self, user_id: str) -> UserResponse:
+        """Call `GET /users/{uid}`."""
+        payload = await self._request("GET", f"/users/{user_id}")
+        return cast("UserResponse", _typed_dict(payload))
+
+    async def update_user(self, user_id: str, data: UpdateUserRequest) -> UserResponse:
+        """Call `PUT /users/{uid}`."""
+        payload = await self._request("PUT", f"/users/{user_id}", json_body=data)
+        return cast("UserResponse", _typed_dict(payload))
+
+    async def delete_user(self, user_id: str) -> None:
+        """Call `DELETE /users/{uid}`."""
+        await self._request("DELETE", f"/users/{user_id}", expected_statuses={HTTP_STATUS_NO_CONTENT})
+
+    async def list_user_events(self, user_id: str) -> list[EventResponse]:
+        """Call `GET /users/{uid}/events`."""
+        payload = await self._request("GET", f"/users/{user_id}/events")
+        return cast("list[EventResponse]", _typed_list(payload))
+
+    async def list_user_organizations(self, user_id: str) -> list[OrganizationResponse]:
+        """Call `GET /users/{uid}/organizations`."""
+        payload = await self._request("GET", f"/users/{user_id}/organizations")
+        return cast("list[OrganizationResponse]", _typed_list(payload))
 
     async def _request(
         self,
@@ -328,11 +490,16 @@ class BackendAPIClient:
         if not response.content:
             return None
 
-        payload = response.json()
+        payload = _response_json(response)
         if isinstance(payload, dict):
-            return payload
+            return cast("dict[str, Any]", payload)
         if isinstance(payload, list):
-            return [item for item in payload if isinstance(item, dict)]
+            return _list_of_dicts(
+                payload=cast("list[object]", payload),
+                method=method,
+                path=path,
+                status_code=response.status_code,
+            )
 
         msg = f"Unexpected response payload for {method} {path}"
         raise BackendAPIError(msg, status_code=response.status_code)
@@ -408,6 +575,20 @@ def _optional_params(**values: Any) -> dict[str, Any] | None:  # noqa: ANN401
     return None
 
 
+def _pagination_params(*, limit: int | None = None, offset: int | None = None) -> dict[str, int] | None:
+    if limit is not None and limit < 1:
+        msg = "limit must be at least 1"
+        raise ValueError(msg)
+    if offset is not None and offset < 0:
+        msg = "offset must be at least 0"
+        raise ValueError(msg)
+
+    params = _optional_params(limit=limit, offset=offset)
+    if params is None:
+        return None
+    return cast("dict[str, int]", params)
+
+
 def _typed_dict(payload: dict[str, Any] | list[dict[str, Any]] | None) -> dict[str, Any]:
     if isinstance(payload, dict):
         return payload
@@ -424,12 +605,33 @@ def _typed_list(payload: dict[str, Any] | list[dict[str, Any]] | None) -> list[d
     raise BackendAPIError(msg, status_code=HTTP_STATUS_OK)
 
 
+def _response_json(response: httpx.Response) -> object:
+    try:
+        return response.json()
+    except (JSONDecodeError, ValueError) as exc:
+        msg = f"Response payload is not valid JSON (status {response.status_code})"
+        raise BackendAPIError(msg, status_code=response.status_code) from exc
+
+
+def _list_of_dicts(*, payload: list[object], method: str, path: str, status_code: int) -> list[dict[str, Any]]:
+    typed_items: list[dict[str, Any]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            msg = f"Unexpected list item payload for {method} {path}"
+            raise BackendAPIError(msg, status_code=status_code)
+        typed_items.append(cast("dict[str, Any]", item))
+    return typed_items
+
+
 def _to_backend_api_error(response: httpx.Response) -> BackendAPIError:
     payload: dict[str, Any] | None = None
     message = f"Backend API request failed with status {response.status_code}"
 
     if response.content:
-        body = response.json()
+        try:
+            body = response.json()
+        except (JSONDecodeError, ValueError):
+            body = None
         if isinstance(body, dict):
             payload = body
             error_message = body.get("message") or body.get("error")
