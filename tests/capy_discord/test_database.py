@@ -26,6 +26,16 @@ class _FakeResponse:
         return self._payload
 
 
+class _FakeInvalidJsonResponse:
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        self.content = b"not-json"
+
+    def json(self):
+        msg = "Invalid JSON payload"
+        raise ValueError(msg)
+
+
 @pytest.mark.asyncio
 async def test_get_database_pool_requires_initialization():
     await close_database_pool()
@@ -105,5 +115,53 @@ async def test_backend_error_is_raised_with_status_and_payload(mock_request):
 
     assert exc_info.value.status_code == HTTP_STATUS_NOT_FOUND
     assert exc_info.value.payload == {"error": "not_found", "message": "event missing"}
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_list_events_by_organization_uses_swagger_path(mock_request):
+    await close_database_pool()
+    mock_request.return_value = _FakeResponse(200, [{"eid": "evt-2"}])
+
+    client = await init_database_pool("http://localhost:8080")
+    events = await client.list_events_by_organization("org-1", limit=20, offset=0)
+
+    assert events[0].get("eid") == "evt-2"
+    kwargs = mock_request.call_args.kwargs
+    assert kwargs["method"] == "GET"
+    assert kwargs["url"] == "/events/org/org-1"
+    assert kwargs["params"] == {"limit": 20, "offset": 0}
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+async def test_list_events_rejects_invalid_pagination_values():
+    await close_database_pool()
+    client = await init_database_pool("http://localhost:8080")
+
+    with pytest.raises(ValueError, match="limit must be at least 1"):
+        await client.list_events(limit=0)
+
+    with pytest.raises(ValueError, match="offset must be at least 0"):
+        await client.list_events(offset=-1)
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_invalid_json_response_raises_backend_api_error(mock_request):
+    await close_database_pool()
+    mock_request.return_value = _FakeInvalidJsonResponse(200)
+
+    client = await init_database_pool("http://localhost:8080")
+
+    with pytest.raises(BackendAPIError) as exc_info:
+        await client.list_events()
+
+    assert exc_info.value.status_code == 200
 
     await close_database_pool()
