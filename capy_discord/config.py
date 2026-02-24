@@ -26,6 +26,9 @@ class Settings(EnvConfig):
     # Ticket System Configuration
     ticket_feedback_channel_id: int = 0
 
+    # Event System Configuration
+    announcement_channel_name: str = "test-announcements"
+
     backend_environment: Literal["dev", "prod"] = "dev"
     backend_api_dev_base_url: str = "http://localhost:8080"
     backend_api_prod_base_url: str = ""
