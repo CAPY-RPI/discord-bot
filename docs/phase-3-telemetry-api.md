@@ -109,6 +109,118 @@ The bot only inspects the HTTP status code. Non-2xx → log warning + drop batch
 
 ---
 
+### `GET /v1/telemetry/events` — Paginated Event List
+
+Returns raw events from the database with filtering and pagination. Used by future tooling and the Phase 4 dashboard.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `event_type` | `interaction` \| `completion` | Filter to one event type |
+| `command_name` | string | Filter by command name |
+| `guild_id` | integer | Filter to a specific guild |
+| `user_id` | integer | Filter to a specific user |
+| `status` | `success` \| `user_error` \| `internal_error` | Filter completions by status |
+| `from` | ISO 8601 UTC | Start of time range (inclusive) |
+| `to` | ISO 8601 UTC | End of time range (inclusive) |
+| `limit` | integer | Results per page. Default: `50`, max: `500` |
+| `offset` | integer | Pagination offset. Default: `0` |
+
+**Response (200 OK):**
+```json
+{
+  "total": 1250,
+  "limit": 50,
+  "offset": 0,
+  "events": [
+    {
+      "event_type": "interaction",
+      "correlation_id": "a3f9c1d20b4e",
+      "timestamp": "2026-02-20T14:31:58.442000Z",
+      "received_at": "2026-02-20T14:32:01.100000Z",
+      "interaction_type": "slash_command",
+      "user_id": 123456789012345678,
+      "username": "alice#0001",
+      "command_name": "ping",
+      "guild_id": 987654321098765432,
+      "guild_name": "CAPY Server",
+      "channel_id": 111222333444555666,
+      "options": {},
+      "bot_version": "0.1.0"
+    },
+    {
+      "event_type": "completion",
+      "correlation_id": "a3f9c1d20b4e",
+      "timestamp": "2026-02-20T14:31:58.551000Z",
+      "received_at": "2026-02-20T14:32:01.100000Z",
+      "command_name": "ping",
+      "status": "success",
+      "duration_ms": 109.3,
+      "error_type": null,
+      "bot_version": "0.1.0"
+    }
+  ]
+}
+```
+
+`received_at` is the server-side ingestion timestamp (set by the API). The difference between `timestamp` and `received_at` is the pipeline lag.
+
+---
+
+### `GET /v1/telemetry/metrics` — Aggregate Statistics
+
+Returns pre-aggregated metrics computed from the database over an optional time window. Designed for the future `/stats` Discord command and the Phase 4 dashboard.
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `from` | ISO 8601 UTC | Start of time range. Default: 30 days ago |
+| `to` | ISO 8601 UTC | End of time range. Default: now |
+| `guild_id` | integer | Scope metrics to a specific guild |
+
+**Response (200 OK):**
+```json
+{
+  "period": {
+    "from": "2026-01-01T00:00:00Z",
+    "to": "2026-01-31T23:59:59Z"
+  },
+  "totals": {
+    "interactions": 4821,
+    "unique_users": 142,
+    "guilds_active": 3
+  },
+  "by_type": {
+    "slash_command": 3201,
+    "button": 1100,
+    "modal": 420,
+    "dropdown": 100
+  },
+  "top_commands": [
+    {"command": "ping",    "invocations": 850, "success_rate": 0.99, "avg_latency_ms": 112.3},
+    {"command": "profile", "invocations": 720, "success_rate": 0.97, "avg_latency_ms": 234.1},
+    {"command": "help",    "invocations": 510, "success_rate": 1.0,  "avg_latency_ms":  88.4}
+  ],
+  "completions": {
+    "success": 3150,
+    "user_error": 42,
+    "internal_error": 9
+  },
+  "top_errors": [
+    {"error_type": "UserFriendlyError", "count": 38},
+    {"error_type": "RuntimeError",      "count":  9}
+  ]
+}
+```
+
+`top_commands` is computed via a JOIN between `telemetry_interactions` and `telemetry_completions` on `correlation_id`, grouped by `command_name`, ordered by `invocations DESC`, limited to 10.
+
+`success_rate` = `success_count / total_completions` for that command. `avg_latency_ms` excludes failed completions.
+
+---
+
 ## OAuth Client Credentials Flow
 
 Service-to-service auth using Authentik's OAuth 2.0 client credentials grant.
@@ -441,6 +553,166 @@ Mock strategy: after `await client.start()` creates the real `httpx.AsyncClient`
 **On 401:** `_token = None` → re-fetch from Authentik → retry once → log + drop on second failure.
 **On network failure:** `except Exception` → log exception → return `False` → buffer cleared → bot continues unaffected.
 **On shutdown:** Cancel tasks → drain remaining queue events into buffer → final flush (up to `batch_size` events) → close `httpx.AsyncClient`.
+
+---
+
+## PostgreSQL Database Schema
+
+The API gateway owns all DDL. The bot never touches the database directly.
+
+### `telemetry_interactions`
+
+Stores one row per interaction event (slash command invoked, button clicked, modal submitted, etc.).
+
+```sql
+CREATE TABLE telemetry_interactions (
+    id               BIGSERIAL     PRIMARY KEY,
+    correlation_id   CHAR(12)      NOT NULL,
+    timestamp        TIMESTAMPTZ   NOT NULL,
+    received_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    interaction_type VARCHAR(20)   NOT NULL,
+    user_id          BIGINT        NOT NULL,
+    username         VARCHAR(100)  NOT NULL,
+    command_name     VARCHAR(100),
+    guild_id         BIGINT,
+    guild_name       VARCHAR(100),
+    channel_id       BIGINT        NOT NULL,
+    options          JSONB         NOT NULL DEFAULT '{}',
+    bot_version      VARCHAR(20)   NOT NULL DEFAULT 'unknown'
+);
+```
+
+**Column notes:**
+- `correlation_id CHAR(12)` — fixed-length hex string from `uuid.uuid4().hex[:12]`. Links to `telemetry_completions.correlation_id`.
+- `timestamp` — when the interaction occurred on Discord (from `interaction.created_at`, UTC).
+- `received_at` — when the API ingested the event. The delta `received_at - timestamp` = pipeline lag.
+- `interaction_type` — one of: `slash_command`, `button`, `dropdown`, `modal`, `autocomplete`.
+- `guild_id` / `guild_name` — nullable; `NULL` for DM interactions.
+- `command_name` — nullable; `NULL` for non-command interactions (e.g. button clicks without a named command).
+- `options JSONB` — slash command arguments, modal field values, or select menu values. Stored as JSONB for flexibility.
+- `bot_version` — bot deployment version at time of event. Useful for correlating regressions to releases.
+
+---
+
+### `telemetry_completions`
+
+Stores one row per command outcome (success or failure). Linked to `telemetry_interactions` via `correlation_id`.
+
+```sql
+CREATE TABLE telemetry_completions (
+    id             BIGSERIAL     PRIMARY KEY,
+    correlation_id CHAR(12)      NOT NULL,
+    timestamp      TIMESTAMPTZ   NOT NULL,
+    received_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    command_name   VARCHAR(100)  NOT NULL,
+    status         VARCHAR(20)   NOT NULL,
+    duration_ms    NUMERIC(10,2),
+    error_type     VARCHAR(100),
+    bot_version    VARCHAR(20)   NOT NULL DEFAULT 'unknown',
+
+    CONSTRAINT chk_completion_status
+        CHECK (status IN ('success', 'user_error', 'internal_error'))
+);
+```
+
+**Column notes:**
+- No `FOREIGN KEY` constraint to `telemetry_interactions` — correlation is soft (JOIN at query time). This avoids referential integrity failures if a completion arrives before its interaction in edge cases.
+- `duration_ms NUMERIC(10,2)` — nullable as a safety measure; should always be present from the bot but the API should not reject a batch over a missing value.
+- `error_type` — Python exception class name (e.g. `RuntimeError`, `UserFriendlyError`). NULL on `status = 'success'`.
+- `timestamp` — set to `datetime.now(UTC)` on the bot side at completion time (not interaction start time). See `CompletionEventPayload`.
+
+---
+
+### Indexes
+
+```sql
+-- telemetry_interactions
+CREATE INDEX idx_interactions_timestamp
+    ON telemetry_interactions (timestamp);
+
+CREATE INDEX idx_interactions_correlation_id
+    ON telemetry_interactions (correlation_id);
+
+CREATE INDEX idx_interactions_guild_id
+    ON telemetry_interactions (guild_id, timestamp)
+    WHERE guild_id IS NOT NULL;
+
+CREATE INDEX idx_interactions_command_name
+    ON telemetry_interactions (command_name, timestamp)
+    WHERE command_name IS NOT NULL;
+
+CREATE INDEX idx_interactions_user_id
+    ON telemetry_interactions (user_id);
+
+CREATE INDEX idx_interactions_type
+    ON telemetry_interactions (interaction_type, timestamp);
+
+-- telemetry_completions
+CREATE INDEX idx_completions_timestamp
+    ON telemetry_completions (timestamp);
+
+CREATE INDEX idx_completions_correlation_id
+    ON telemetry_completions (correlation_id);
+
+CREATE INDEX idx_completions_command_status
+    ON telemetry_completions (command_name, status);
+
+CREATE INDEX idx_completions_status_time
+    ON telemetry_completions (status, timestamp);
+
+CREATE INDEX idx_completions_error_type
+    ON telemetry_completions (error_type)
+    WHERE error_type IS NOT NULL;
+```
+
+**Rationale:**
+- Time-range queries on `timestamp` are the most common access pattern for both the metrics endpoint and the events list endpoint.
+- `correlation_id` indexes enable efficient JOIN between the two tables for `top_commands` aggregation.
+- Partial indexes (`WHERE guild_id IS NOT NULL`, `WHERE error_type IS NOT NULL`) avoid indexing null rows, keeping index size smaller.
+- `idx_interactions_user_id` supports per-user filtering and `COUNT(DISTINCT user_id)` in metrics.
+
+**Not included in Phase 3:**
+- GIN index on `options JSONB` — not needed until queries inside `options` are required (Phase 4).
+- Table partitioning by `timestamp` — worth adding once row counts exceed ~10M. Defer to Phase 4.
+- `pg_cron` data retention job — suggested policy is 90 days, but the implementation is left to the API team.
+
+---
+
+### Key Query Examples
+
+**Top commands (used by `GET /v1/telemetry/metrics`):**
+```sql
+SELECT
+    i.command_name,
+    COUNT(i.id)                                                          AS invocations,
+    AVG(c.duration_ms)                                                   AS avg_latency_ms,
+    SUM(CASE WHEN c.status = 'success' THEN 1 ELSE 0 END)::float
+        / NULLIF(COUNT(c.id), 0)                                        AS success_rate
+FROM telemetry_interactions i
+LEFT JOIN telemetry_completions c ON i.correlation_id = c.correlation_id
+WHERE i.timestamp BETWEEN :from AND :to
+  AND i.command_name IS NOT NULL
+GROUP BY i.command_name
+ORDER BY invocations DESC
+LIMIT 10;
+```
+
+**Unique users over a time window:**
+```sql
+SELECT COUNT(DISTINCT user_id)
+FROM telemetry_interactions
+WHERE timestamp BETWEEN :from AND :to;
+```
+
+**Error breakdown:**
+```sql
+SELECT error_type, COUNT(*) AS count
+FROM telemetry_completions
+WHERE timestamp BETWEEN :from AND :to
+  AND error_type IS NOT NULL
+GROUP BY error_type
+ORDER BY count DESC;
+```
 
 ---
 
