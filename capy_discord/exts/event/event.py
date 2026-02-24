@@ -481,9 +481,12 @@ class Event(commands.Cog):
     async def _on_announce_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
         """Handle event selection for announcement."""
         guild = interaction.guild
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
         if not guild:
             embed = error_embed("No Server", "Cannot determine server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         # Get the announcement channel
@@ -495,16 +498,28 @@ class Event(commands.Cog):
                 f"Could not find a channel named '{settings.announcement_channel_name}'. "
                 "Please rename or create an announcement channel.",
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         # Check if bot has permission to post in the channel
-        if not announcement_channel.permissions_for(guild.me).send_messages:
+        bot_member = guild.me
+        if bot_member is None and self.bot.user is not None:
+            bot_member = guild.get_member(self.bot.user.id)
+
+        if bot_member is None:
+            embed = error_embed(
+                "Member Cache Unavailable",
+                "I couldn't resolve my server member information. Please try again.",
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        if not announcement_channel.permissions_for(bot_member).send_messages:
             embed = error_embed(
                 "No Permission",
                 "I don't have permission to send messages in the announcement channel.",
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         try:
@@ -536,15 +551,15 @@ class Event(commands.Cog):
                 "Users can react with ✅ to attend or ❌ to decline.",
             )
             self._apply_event_fields(success, selected_event)
-            await interaction.response.send_message(embed=success, ephemeral=True)
+            await interaction.followup.send(embed=success, ephemeral=True)
 
         except discord.Forbidden:
             embed = error_embed("Permission Denied", "I don't have permission to send messages in that channel.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
         except discord.HTTPException:
             self.log.exception("Failed to announce event")
             embed = error_embed("Announcement Failed", "Failed to announce the event. Please try again.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     def _create_announcement_embed(self, event: EventSchema) -> discord.Embed:
         """Create an announcement embed for an event."""
