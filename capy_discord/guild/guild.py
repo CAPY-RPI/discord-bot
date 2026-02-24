@@ -7,7 +7,7 @@ from discord.ext import commands
 
 from capy_discord.ui.embeds import error_embed
 
-from ._guild_schemas import (
+from ._schemas import (
     GuildSettings,
 )
 
