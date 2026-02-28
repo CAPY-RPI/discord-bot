@@ -2,7 +2,7 @@
 
 This extension provides:
 - Guild bootstrap checklist on bot invite.
-- In-memory setup configuration via /setup commands.
+- In-memory setup configuration via /onboarding commands.
 - Member onboarding with rule acknowledgement and role assignment.
 """
 
@@ -30,7 +30,7 @@ def utc_now() -> datetime:
 class Onboarding(commands.Cog):
     """Cog that manages guild setup and member onboarding."""
 
-    setup = app_commands.Group(name="setup", description="Configure onboarding and server setup")
+    onboarding = app_commands.Group(name="onboarding", description="Configure onboarding and server setup")
 
     def __init__(self, bot: commands.Bot) -> None:
         """Initialize in-memory stores for setup and user onboarding state."""
@@ -147,10 +147,10 @@ class Onboarding(commands.Cog):
         return (
             "Thanks for inviting CAPY.\n\n"
             "Run these commands to configure setup:\n"
-            "- `/setup roles`\n"
-            "- `/setup channels`\n"
-            "- `/setup onboarding`\n"
-            "- `/setup summary`\n\n"
+            "- `/onboarding roles`\n"
+            "- `/onboarding channels`\n"
+            "- `/onboarding config`\n"
+            "- `/onboarding summary`\n\n"
             "**Current Setup Status**\n"
             f"{'\n'.join(status_lines)}\n\n"
             "**Missing Required Items**\n"
@@ -204,7 +204,7 @@ class Onboarding(commands.Cog):
         config = self._ensure_setup(guild.id)
         if config.member_role_id is None:
             await interaction.response.send_message(
-                "Setup incomplete: configure a verification member role with `/setup roles`.",
+                "Setup incomplete: configure a verification member role with `/onboarding roles`.",
                 ephemeral=True,
             )
             return
@@ -212,7 +212,7 @@ class Onboarding(commands.Cog):
         role = guild.get_role(config.member_role_id)
         if role is None:
             await interaction.response.send_message(
-                "Configured member role no longer exists. Please reconfigure `/setup roles`.",
+                "Configured member role no longer exists. Please reconfigure `/onboarding roles`.",
                 ephemeral=True,
             )
             return
@@ -327,7 +327,7 @@ class Onboarding(commands.Cog):
             f"🟡 Onboarding started for {member.mention} ({member.id})",
         )
 
-    @setup.command(name="summary", description="Show current setup values and missing required items")
+    @onboarding.command(name="summary", description="Show current setup values and missing required items")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     async def setup_summary(self, interaction: discord.Interaction) -> None:
@@ -368,7 +368,7 @@ class Onboarding(commands.Cog):
 
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
-    @setup.command(name="roles", description="Set trusted admin/mod roles and verification member role")
+    @onboarding.command(name="roles", description="Set trusted admin/mod roles and verification member role")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
@@ -399,7 +399,7 @@ class Onboarding(commands.Cog):
 
         await interaction.response.send_message("✅ Setup roles updated.", ephemeral=True)
 
-    @setup.command(name="channels", description="Set channels used by logs, announcements, welcome, and support")
+    @onboarding.command(name="channels", description="Set channels used by logs, announcements, welcome, and support")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
@@ -434,7 +434,7 @@ class Onboarding(commands.Cog):
 
         await interaction.response.send_message("✅ Setup channels updated.", ephemeral=True)
 
-    @setup.command(name="onboarding", description="Set onboarding flow behavior")
+    @onboarding.command(name="config", description="Set onboarding flow behavior")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
@@ -469,7 +469,7 @@ class Onboarding(commands.Cog):
 
         await interaction.response.send_message("✅ Onboarding settings updated.", ephemeral=True)
 
-    @setup.command(name="reset", description="Reset setup and onboarding state for this guild")
+    @onboarding.command(name="reset", description="Reset setup and onboarding state for this guild")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     async def setup_reset(self, interaction: discord.Interaction) -> None:
