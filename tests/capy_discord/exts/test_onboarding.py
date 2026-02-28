@@ -60,7 +60,7 @@ async def test_on_guild_join_posts_setup_message_to_first_public_channel(cog):
     public_channel.send.assert_called_once()
     sent_text = public_channel.send.call_args.args[0]
     assert "Run these commands to configure setup" in sent_text
-    assert "/setup roles" in sent_text
+    assert "/onboarding roles" in sent_text
 
 
 @pytest.mark.asyncio
