@@ -555,7 +555,10 @@ class Telemetry(commands.Cog):
                 if field_id and field_value is not None:
                     options[field_id] = field_value
 
-    def _serialize_value(self, value: Any) -> Any:  # noqa: ANN401
+    type JsonPrimitive = str | int | float | bool | None
+    type JsonValue = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
+
+    def _serialize_value(self, value: object) -> JsonValue:
         """Convert complex Discord objects to simple serializable types.
 
         Args:
@@ -577,9 +580,9 @@ class Telemetry(commands.Cog):
             return [self._serialize_value(v) for v in value]
 
         if isinstance(value, dict):
-            return {k: self._serialize_value(v) for k, v in value.items()}
+            return {str(k): self._serialize_value(v) for k, v in value.items()}
 
-        return value
+        return str(value)
 
     # ========================================================================================
     # LOGGING METHODS
