@@ -1,12 +1,19 @@
+import secrets
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from capy_discord.database import (
+    BackendAPIClient,
     BackendAPIError,
     BackendClientConfig,
     BackendClientNotInitializedError,
+    BackendConfigurationError,
+    HTTP_STATUS_BAD_REQUEST,
+    HTTP_STATUS_CREATED,
     HTTP_STATUS_NOT_FOUND,
+    _normalize_api_base_url,
     close_database_pool,
     get_database_pool,
     init_database_pool,
@@ -14,7 +21,7 @@ from capy_discord.database import (
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, payload: dict | list | None) -> None:
+    def __init__(self, status_code: int, payload: dict | list | str | None) -> None:
         self.status_code = status_code
         self._payload = payload
         self.content = b"" if payload is None else b"payload"
@@ -37,6 +44,55 @@ class _FakeInvalidJsonResponse:
 
 
 @pytest.mark.asyncio
+async def test_client_configuration_validation_errors():
+    with pytest.raises(BackendConfigurationError, match="base_url must be set"):
+        BackendAPIClient("")
+
+    with pytest.raises(ValueError, match="timeout_seconds must be greater than 0"):
+        BackendAPIClient("http://localhost:8080", config=BackendClientConfig(timeout_seconds=0))
+
+    with pytest.raises(ValueError, match="max_connections must be at least 1"):
+        BackendAPIClient("http://localhost:8080", config=BackendClientConfig(max_connections=0))
+
+    with pytest.raises(ValueError, match="max_keepalive_connections must be at least 0"):
+        BackendAPIClient("http://localhost:8080", config=BackendClientConfig(max_keepalive_connections=-1))
+
+
+@pytest.mark.asyncio
+async def test_unstarted_client_raises_not_initialized_error():
+    client = BackendAPIClient("http://localhost:8080")
+
+    with pytest.raises(BackendClientNotInitializedError):
+        await client.list_events()
+
+
+def test_normalize_api_base_url_behaviors():
+    assert _normalize_api_base_url("http://localhost:8080") == "http://localhost:8080/v1"
+    assert _normalize_api_base_url("http://localhost:8080/") == "http://localhost:8080/v1"
+    assert _normalize_api_base_url("https://api.example.com/v1") == "https://api.example.com/v1"
+
+    with pytest.raises(BackendConfigurationError, match="base_url must be set"):
+        _normalize_api_base_url("   ")
+
+
+@pytest.mark.asyncio
+async def test_client_config_applies_bot_token_and_cookie():
+    bot_token_value = secrets.token_urlsafe(12)
+    auth_cookie_value = secrets.token_urlsafe(12)
+
+    client = BackendAPIClient(
+        "http://localhost:8080",
+        config=BackendClientConfig(bot_token=bot_token_value, auth_cookie=auth_cookie_value),
+    )
+    await client.start()
+
+    assert client._client.headers.get("X-Bot-Token") == bot_token_value
+    assert client._client.cookies.get("capy_auth") == auth_cookie_value
+
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_get_database_pool_requires_initialization():
     await close_database_pool()
 
@@ -55,6 +111,18 @@ async def test_init_database_pool_is_idempotent():
     assert first is get_database_pool()
 
     await close_database_pool()
+
+
+@pytest.mark.asyncio
+async def test_close_database_pool_is_idempotent():
+    await close_database_pool()
+    await init_database_pool("http://localhost:8080")
+
+    await close_database_pool()
+    await close_database_pool()
+
+    with pytest.raises(BackendClientNotInitializedError):
+        get_database_pool()
 
 
 @pytest.mark.asyncio
@@ -254,6 +322,162 @@ async def test_auth_me_and_refresh_return_expected_payloads(mock_request):
 
     assert me.get("uid") == "u-1"
     assert refreshed.get("token") == "jwt"
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_auth_callback_bad_request_raises_backend_api_error(mock_request):
+    await close_database_pool()
+    mock_request.return_value = _FakeResponse(HTTP_STATUS_BAD_REQUEST, {"message": "invalid callback"})
+
+    client = await init_database_pool("http://localhost:8080")
+
+    with pytest.raises(BackendAPIError) as exc_info:
+        await client.auth_google_callback(code="bad", state="bad")
+
+    assert exc_info.value.status_code == HTTP_STATUS_BAD_REQUEST
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_bot_endpoints_use_expected_paths(mock_request):
+    await close_database_pool()
+    mock_request.side_effect = [
+        _FakeResponse(200, {"token_id": "t-1", "name": "bot-token"}),
+        _FakeResponse(200, [{"token_id": "t-1"}]),
+        _FakeResponse(HTTP_STATUS_CREATED, {"token_id": "t-2", "token": "secret"}),
+        _FakeResponse(204, None),
+    ]
+
+    client = await init_database_pool("http://localhost:8080")
+    me = await client.bot_me()
+    tokens = await client.list_bot_tokens()
+    created = await client.create_bot_token({"name": "new-token"})
+    await client.revoke_bot_token("t-2")
+
+    assert me.get("token_id") == "t-1"
+    assert tokens[0].get("token_id") == "t-1"
+    assert created.get("token_id") == "t-2"
+
+    first_kwargs = mock_request.await_args_list[0].kwargs
+    second_kwargs = mock_request.await_args_list[1].kwargs
+    third_kwargs = mock_request.await_args_list[2].kwargs
+    fourth_kwargs = mock_request.await_args_list[3].kwargs
+
+    assert first_kwargs["url"] == "/bot/me"
+    assert second_kwargs["url"] == "/bot/tokens"
+    assert third_kwargs["url"] == "/bot/tokens"
+    assert third_kwargs["json"] == {"name": "new-token"}
+    assert fourth_kwargs["url"] == "/bot/tokens/t-2"
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_organization_endpoints_use_expected_paths(mock_request):
+    await close_database_pool()
+    mock_request.side_effect = [
+        _FakeResponse(200, [{"oid": "org-1", "name": "Org One"}]),
+        _FakeResponse(200, {"oid": "org-1", "name": "Org One"}),
+        _FakeResponse(HTTP_STATUS_CREATED, {"oid": "org-2", "name": "Org Two"}),
+        _FakeResponse(200, {"oid": "org-2", "name": "Org Two Updated"}),
+        _FakeResponse(204, None),
+        _FakeResponse(200, [{"eid": "evt-1"}]),
+    ]
+
+    client = await init_database_pool("http://localhost:8080")
+    organizations = await client.list_organizations(limit=5, offset=0)
+    organization = await client.get_organization("org-1")
+    created = await client.create_organization({"name": "Org Two"})
+    updated = await client.update_organization("org-2", {"name": "Org Two Updated"})
+    await client.delete_organization("org-2")
+    org_events = await client.list_organization_events("org-1", limit=5, offset=0)
+
+    assert organizations[0].get("oid") == "org-1"
+    assert organization.get("name") == "Org One"
+    assert created.get("oid") == "org-2"
+    assert updated.get("name") == "Org Two Updated"
+    assert org_events[0].get("eid") == "evt-1"
+
+    list_kwargs = mock_request.await_args_list[0].kwargs
+    assert list_kwargs["url"] == "/organizations"
+    assert list_kwargs["params"] == {"limit": 5, "offset": 0}
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_event_crud_and_registration_endpoints(mock_request):
+    await close_database_pool()
+    mock_request.side_effect = [
+        _FakeResponse(200, {"eid": "evt-1", "location": "DCC"}),
+        _FakeResponse(HTTP_STATUS_CREATED, {"eid": "evt-2", "location": "DCC"}),
+        _FakeResponse(200, {"eid": "evt-2", "location": "CBIS"}),
+        _FakeResponse(204, None),
+        _FakeResponse(200, [{"uid": "user-1", "is_attending": True}]),
+    ]
+
+    client = await init_database_pool("http://localhost:8080")
+    fetched = await client.get_event("evt-1")
+    created = await client.create_event({"org_id": "org-1", "location": "DCC"})
+    updated = await client.update_event("evt-2", {"location": "CBIS"})
+    await client.delete_event("evt-2")
+    registrations = await client.list_event_registrations("evt-1")
+
+    assert fetched.get("eid") == "evt-1"
+    assert created.get("eid") == "evt-2"
+    assert updated.get("location") == "CBIS"
+    assert registrations[0].get("uid") == "user-1"
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_http_transport_error_maps_to_backend_api_error(mock_request):
+    await close_database_pool()
+    mock_request.side_effect = httpx.ConnectError("boom")
+
+    client = await init_database_pool("http://localhost:8080")
+
+    with pytest.raises(BackendAPIError) as exc_info:
+        await client.list_events()
+
+    assert exc_info.value.status_code == 0
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_unexpected_scalar_payload_raises_backend_api_error(mock_request):
+    await close_database_pool()
+    mock_request.return_value = _FakeResponse(200, "not-a-json-object")
+
+    client = await init_database_pool("http://localhost:8080")
+
+    with pytest.raises(BackendAPIError):
+        await client.list_events()
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_list_payload_with_non_object_entries_raises_backend_api_error(mock_request):
+    await close_database_pool()
+    mock_request.return_value = _FakeResponse(200, ["bad-item"])
+
+    client = await init_database_pool("http://localhost:8080")
+
+    with pytest.raises(BackendAPIError):
+        await client.list_events()
 
     await close_database_pool()
 
