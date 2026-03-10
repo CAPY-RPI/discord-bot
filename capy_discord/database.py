@@ -288,11 +288,31 @@ class BackendAPIClient:
 
     async def auth_google_redirect(self) -> None:
         """Call `GET /auth/google` expecting redirect status."""
-        await self._request("GET", "/auth/google", expected_statuses={HTTP_STATUS_FOUND})
+        await self._request_without_response_body("GET", "/auth/google", expected_statuses={HTTP_STATUS_FOUND})
+
+    async def auth_google_callback(self, *, code: str, state: str) -> None:
+        """Call `GET /auth/google/callback` expecting redirect status."""
+        params = {"code": code, "state": state}
+        await self._request_without_response_body(
+            "GET",
+            "/auth/google/callback",
+            params=params,
+            expected_statuses={HTTP_STATUS_FOUND},
+        )
 
     async def auth_microsoft_redirect(self) -> None:
         """Call `GET /auth/microsoft` expecting redirect status."""
-        await self._request("GET", "/auth/microsoft", expected_statuses={HTTP_STATUS_FOUND})
+        await self._request_without_response_body("GET", "/auth/microsoft", expected_statuses={HTTP_STATUS_FOUND})
+
+    async def auth_microsoft_callback(self, *, code: str, state: str) -> None:
+        """Call `GET /auth/microsoft/callback` expecting redirect status."""
+        params = {"code": code, "state": state}
+        await self._request_without_response_body(
+            "GET",
+            "/auth/microsoft/callback",
+            params=params,
+            expected_statuses={HTTP_STATUS_FOUND},
+        )
 
     async def bot_me(self) -> BotTokenResponse:
         """Call `GET /bot/me`."""
@@ -503,6 +523,27 @@ class BackendAPIClient:
 
         msg = f"Unexpected response payload for {method} {path}"
         raise BackendAPIError(msg, status_code=response.status_code)
+
+    async def _request_without_response_body(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        expected_statuses: set[int] | None = None,
+    ) -> None:
+        """Execute a backend API request where response body parsing is not required."""
+        self._ensure_started()
+        statuses = expected_statuses or {HTTP_STATUS_OK}
+
+        try:
+            response = await self._client.request(method=method, url=path, params=params)
+        except httpx.HTTPError as exc:
+            msg = f"HTTP request failed for {method} {path}"
+            raise BackendAPIError(msg, status_code=0) from exc
+
+        if response.status_code not in statuses:
+            raise _to_backend_api_error(response)
 
     def _ensure_started(self) -> None:
         if self._started:

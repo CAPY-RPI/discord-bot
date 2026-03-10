@@ -28,6 +28,7 @@ class Settings(EnvConfig):
 
     # Event System Configuration
     announcement_channel_name: str = "test-announcements"
+    backend_api_events_org_id: str = ""
 
     backend_environment: Literal["dev", "prod"] = "dev"
     backend_api_dev_base_url: str = "http://localhost:8080"
