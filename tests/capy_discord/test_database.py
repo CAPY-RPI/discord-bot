@@ -165,3 +165,172 @@ async def test_invalid_json_response_raises_backend_api_error(mock_request):
     assert exc_info.value.status_code == 200
 
     await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_auth_redirect_does_not_require_json_payload(mock_request):
+    await close_database_pool()
+    mock_request.return_value = _FakeInvalidJsonResponse(302)
+
+    client = await init_database_pool("http://localhost:8080")
+    await client.auth_google_redirect()
+
+    kwargs = mock_request.call_args.kwargs
+    assert kwargs["method"] == "GET"
+    assert kwargs["url"] == "/auth/google"
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_auth_callback_uses_query_params(mock_request):
+    await close_database_pool()
+    mock_request.return_value = _FakeInvalidJsonResponse(302)
+
+    client = await init_database_pool("http://localhost:8080")
+    await client.auth_google_callback(code="abc", state="xyz")
+
+    kwargs = mock_request.call_args.kwargs
+    assert kwargs["method"] == "GET"
+    assert kwargs["url"] == "/auth/google/callback"
+    assert kwargs["params"] == {"code": "abc", "state": "xyz"}
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_auth_microsoft_redirect_and_callback(mock_request):
+    await close_database_pool()
+    mock_request.side_effect = [
+        _FakeInvalidJsonResponse(302),
+        _FakeInvalidJsonResponse(302),
+    ]
+
+    client = await init_database_pool("http://localhost:8080")
+    await client.auth_microsoft_redirect()
+    await client.auth_microsoft_callback(code="mcode", state="mstate")
+
+    first_kwargs = mock_request.await_args_list[0].kwargs
+    second_kwargs = mock_request.await_args_list[1].kwargs
+
+    assert first_kwargs["url"] == "/auth/microsoft"
+    assert second_kwargs["url"] == "/auth/microsoft/callback"
+    assert second_kwargs["params"] == {"code": "mcode", "state": "mstate"}
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_auth_logout_uses_no_content_status(mock_request):
+    await close_database_pool()
+    mock_request.return_value = _FakeResponse(204, None)
+
+    client = await init_database_pool("http://localhost:8080")
+    await client.auth_logout()
+
+    kwargs = mock_request.call_args.kwargs
+    assert kwargs["method"] == "POST"
+    assert kwargs["url"] == "/auth/logout"
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_auth_me_and_refresh_return_expected_payloads(mock_request):
+    await close_database_pool()
+    mock_request.side_effect = [
+        _FakeResponse(200, {"uid": "u-1", "email": "user@example.com"}),
+        _FakeResponse(200, {"token": "jwt", "user": {"uid": "u-1"}}),
+    ]
+
+    client = await init_database_pool("http://localhost:8080")
+    me = await client.auth_me()
+    refreshed = await client.auth_refresh()
+
+    assert me.get("uid") == "u-1"
+    assert refreshed.get("token") == "jwt"
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_organization_member_endpoints_use_expected_paths(mock_request):
+    await close_database_pool()
+    mock_request.side_effect = [
+        _FakeResponse(200, [{"uid": "user-1", "is_admin": True}]),
+        _FakeResponse(201, None),
+        _FakeResponse(204, None),
+    ]
+
+    client = await init_database_pool("http://localhost:8080")
+    members = await client.list_organization_members("org-1")
+    await client.add_organization_member("org-1", {"uid": "user-2", "is_admin": False})
+    await client.remove_organization_member("org-1", "user-2")
+
+    assert members[0].get("uid") == "user-1"
+
+    list_kwargs = mock_request.await_args_list[0].kwargs
+    add_kwargs = mock_request.await_args_list[1].kwargs
+    remove_kwargs = mock_request.await_args_list[2].kwargs
+
+    assert list_kwargs["url"] == "/organizations/org-1/members"
+    assert add_kwargs["url"] == "/organizations/org-1/members"
+    assert add_kwargs["json"] == {"uid": "user-2", "is_admin": False}
+    assert remove_kwargs["url"] == "/organizations/org-1/members/user-2"
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_user_endpoints_use_expected_paths(mock_request):
+    await close_database_pool()
+    mock_request.side_effect = [
+        _FakeResponse(200, {"uid": "user-1", "first_name": "Ada"}),
+        _FakeResponse(200, {"uid": "user-1", "first_name": "Grace"}),
+        _FakeResponse(204, None),
+        _FakeResponse(200, [{"eid": "evt-1"}]),
+        _FakeResponse(200, [{"oid": "org-1"}]),
+    ]
+
+    client = await init_database_pool("http://localhost:8080")
+    user = await client.get_user("user-1")
+    updated = await client.update_user("user-1", {"first_name": "Grace"})
+    await client.delete_user("user-1")
+    events = await client.list_user_events("user-1")
+    organizations = await client.list_user_organizations("user-1")
+
+    assert user.get("first_name") == "Ada"
+    assert updated.get("first_name") == "Grace"
+    assert events[0].get("eid") == "evt-1"
+    assert organizations[0].get("oid") == "org-1"
+
+    get_kwargs = mock_request.await_args_list[0].kwargs
+    update_kwargs = mock_request.await_args_list[1].kwargs
+    delete_kwargs = mock_request.await_args_list[2].kwargs
+
+    assert get_kwargs["url"] == "/users/user-1"
+    assert update_kwargs["url"] == "/users/user-1"
+    assert update_kwargs["json"] == {"first_name": "Grace"}
+    assert delete_kwargs["url"] == "/users/user-1"
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.aclose", new_callable=AsyncMock)
+async def test_async_context_manager_starts_and_closes_client(mock_aclose):
+    await close_database_pool()
+
+    async with await init_database_pool("http://localhost:8080") as client:
+        assert client.is_started is True
+
+    assert mock_aclose.await_count >= 1
+
+    await close_database_pool()
