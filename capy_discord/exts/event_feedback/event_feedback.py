@@ -12,6 +12,7 @@ import discord
 from discord import app_commands, ui
 from discord.ext import commands
 
+from capy_discord.config import settings
 from capy_discord.ui.modal import BaseModal
 from capy_discord.ui.views import BaseView
 
@@ -143,7 +144,8 @@ class EventFeedback(commands.Cog):
         name="event_feedback",
         description="Send a post-event feedback survey to all guild members via DM",
     )
-    @app_commands.default_permissions(manage_guild=True)
+    # TODO: re-enable before production - hides command from non-admins in Discord UI
+    # @app_commands.default_permissions(manage_guild=True)
     async def event_feedback(self, interaction: discord.Interaction) -> None:
         """Iterate over guild members and DM each one a rating view."""
         # Defer so we can take our time sending potentially many DMs.
@@ -156,7 +158,18 @@ class EventFeedback(commands.Cog):
 
         # For now, all non-bot guild members represent event attendees.
         # [ATTENDANCE CALL]: Replace guild.members with the actual attendee list once implemented.
-        members = [m for m in guild.members if not m.bot]
+        if settings.test_user_id is not None:
+            # TEST MODE: only DM the configured test user.
+            test_member = guild.get_member(settings.test_user_id)
+            if test_member is None:
+                await interaction.followup.send(
+                    f"⚠️ TEST MODE: user `{settings.test_user_id}` not found in this guild.", ephemeral=True
+                )
+                return
+            members = [test_member]
+            self.log.info("TEST MODE: restricting feedback DM to user %s", settings.test_user_id)
+        else:
+            members = [m for m in guild.members if not m.bot]
 
         sent, failed = 0, 0
         for member in members:

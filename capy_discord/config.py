@@ -28,5 +28,8 @@ class Settings(EnvConfig):
     # Event System Configuration
     announcement_channel_name: str = "test-announcements"
 
+    # Testing
+    test_user_id: int | None = None
+
 
 settings = Settings()
