@@ -6,7 +6,7 @@ import discord
 import pytest
 from discord.ext import commands
 
-from capy_discord.exts.onboarding.setup import Onboarding, utc_now
+from capy_discord.exts.setup.setup import Onboarding, utc_now
 
 
 @pytest.fixture
