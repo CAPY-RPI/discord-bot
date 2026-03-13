@@ -259,7 +259,7 @@ async def test_enforce_grace_period_kicks_unverified_member(cog, monkeypatch):
     async def fake_sleep(_seconds: float) -> None:
         state.started_at_utc = utc_now() - timedelta(hours=2)
 
-    monkeypatch.setattr("capy_discord.exts.onboarding.onboarding.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("capy_discord.exts.setup.setup.asyncio.sleep", fake_sleep)
 
     await cog._enforce_grace_period(guild.id, member.id)
 
