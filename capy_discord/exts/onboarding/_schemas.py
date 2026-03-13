@@ -18,6 +18,9 @@ class GuildSetupConfig(BaseModel):
     announcement_channel_id: int | None = None
     welcome_channel_id: int | None = None
     welcome_dm_enabled: bool = False
+    auto_kick_unverified: bool = False
+    grace_period_hours: int = 24
+    log_events: bool = True
     support_channel_id: int | None = None
     rules_location: str | None = None
     verification_acceptance: Literal["button_ack"] = "button_ack"

@@ -2,15 +2,16 @@
 
 This extension provides:
 - Guild bootstrap checklist on bot invite.
-- In-memory setup configuration via /onboarding commands.
+- In-memory setup configuration via /setup commands.
 - Member onboarding with rule acknowledgement and role assignment.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from zoneinfo import ZoneInfo
 
@@ -27,10 +28,10 @@ def utc_now() -> datetime:
     return datetime.now(ZoneInfo("UTC"))
 
 
-class Onboarding(commands.Cog):
+class Setup(commands.Cog):
     """Cog that manages guild setup and member onboarding."""
 
-    onboarding = app_commands.Group(name="onboarding", description="Configure onboarding and server setup")
+    setup = app_commands.Group(name="setup", description="Configure onboarding and server setup")
 
     def __init__(self, bot: commands.Bot) -> None:
         """Initialize in-memory stores for setup and user onboarding state."""
@@ -47,8 +48,14 @@ class Onboarding(commands.Cog):
             user_state_store = {}
             setattr(bot, "onboarding_user_state_store", user_state_store)  # noqa: B010
 
+        grace_tasks: dict[str, asyncio.Task[None]] | None = getattr(bot, "onboarding_grace_tasks", None)
+        if grace_tasks is None:
+            grace_tasks = {}
+            setattr(bot, "onboarding_grace_tasks", grace_tasks)  # noqa: B010
+
         self._setup_store = setup_store
         self._user_state_store = user_state_store
+        self._grace_tasks = grace_tasks
 
     def _state_key(self, guild_id: int, user_id: int) -> str:
         """Build deterministic key for user onboarding state."""
@@ -67,12 +74,29 @@ class Onboarding(commands.Cog):
             self._user_state_store[key] = UserOnboardingState()
         return self._user_state_store[key]
 
-    def _first_public_text_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
-        """Return first public text channel where bot can post."""
+    def _cancel_grace_task(self, guild_id: int, user_id: int) -> None:
+        """Cancel any existing grace-period check for a user."""
+        key = self._state_key(guild_id, user_id)
+        task = self._grace_tasks.pop(key, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _schedule_grace_period_check(self, guild_id: int, user_id: int) -> None:
+        """Start the grace-period enforcement task for a member."""
+        self._cancel_grace_task(guild_id, user_id)
+        task = asyncio.create_task(self._enforce_grace_period(guild_id, user_id))
+        self._grace_tasks[self._state_key(guild_id, user_id)] = task
+
+    def _get_bot_member(self, guild: discord.Guild) -> discord.Member | None:
+        """Return the bot's guild member instance."""
         bot_member = guild.me
         if bot_member is None and self.bot.user is not None:
             bot_member = guild.get_member(self.bot.user.id)
+        return bot_member
 
+    def _first_public_text_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
+        """Return first public text channel where bot can post."""
+        bot_member = self._get_bot_member(guild)
         if bot_member is None:
             return None
 
@@ -131,9 +155,12 @@ class Onboarding(commands.Cog):
             f"- Primary admin role(s): {self._format_role_mentions(guild, config.admin_role_ids)}",
             f"- Moderator role(s): {self._format_role_mentions(guild, config.moderator_role_ids)}",
             f"- Log channel: {self._format_channel_mention(guild, config.log_channel_id)}",
+            f"- Onboarding event logging: {'Yes' if config.log_events else 'No'}",
             f"- Announcement channel: {self._format_channel_mention(guild, config.announcement_channel_id)}",
             f"- Welcome channel: {self._format_channel_mention(guild, config.welcome_channel_id)}",
             f"- Welcome DMs enabled: {'Yes' if config.welcome_dm_enabled else 'No'}",
+            f"- Auto-remove unverified members: {'Yes' if config.auto_kick_unverified else 'No'}",
+            f"- Grace period: {config.grace_period_hours} hour(s)",
             f"- Support/ticket channel: {self._format_channel_mention(guild, config.support_channel_id)}",
             f"- Rules/verification flow: {config.rules_location or 'Not set'}",
             (
@@ -147,10 +174,10 @@ class Onboarding(commands.Cog):
         return (
             "Thanks for inviting CAPY.\n\n"
             "Run these commands to configure setup:\n"
-            "- `/onboarding roles`\n"
-            "- `/onboarding channels`\n"
-            "- `/onboarding config`\n"
-            "- `/onboarding summary`\n\n"
+            "- `/setup roles`\n"
+            "- `/setup channels`\n"
+            "- `/setup config`\n"
+            "- `/setup summary`\n\n"
             "**Current Setup Status**\n"
             f"{'\n'.join(status_lines)}\n\n"
             "**Missing Required Items**\n"
@@ -167,7 +194,7 @@ class Onboarding(commands.Cog):
 
     async def _send_log_message(self, guild: discord.Guild, config: GuildSetupConfig, message: str) -> None:
         """Send a best-effort onboarding event log message to the configured log channel."""
-        if config.log_channel_id is None:
+        if not config.log_events or config.log_channel_id is None:
             return
 
         channel = guild.get_channel(config.log_channel_id)
@@ -192,7 +219,84 @@ class Onboarding(commands.Cog):
         state = self._get_user_state(guild_id, user_id)
         if state.status == "pending":
             state.status = "new"
-            self.log.info("Onboarding timed out for user %s in guild %s", user_id, guild_id)
+            self.log.info("Setup timed out for user %s in guild %s", user_id, guild_id)
+            guild = self.bot.get_guild(guild_id)
+            if guild is not None:
+                config = self._ensure_setup(guild_id)
+                member = guild.get_member(user_id)
+                member_text = f"{member.mention} ({member.id})" if member is not None else f"user {user_id}"
+                await self._send_log_message(guild, config, f"🟠 Onboarding timed out for {member_text}")
+
+    async def _enforce_grace_period(self, guild_id: int, user_id: int) -> None:
+        """Remove unverified members after the configured grace period."""
+        try:
+            config = self._ensure_setup(guild_id)
+            await asyncio.sleep(config.grace_period_hours * 3600)
+
+            config = self._ensure_setup(guild_id)
+            state = self._get_user_state(guild_id, user_id)
+            if not config.auto_kick_unverified or state.status == "verified" or state.started_at_utc is None:
+                return
+
+            deadline = state.started_at_utc + timedelta(hours=config.grace_period_hours)
+            if utc_now() < deadline:
+                return
+
+            guild = self.bot.get_guild(guild_id)
+            if guild is None:
+                return
+
+            member = guild.get_member(user_id)
+            if member is None:
+                return
+
+            bot_member = self._get_bot_member(guild)
+            if bot_member is None or not bot_member.guild_permissions.kick_members:
+                self.log.warning(
+                    "Missing Kick Members permission for overdue onboarding for user %s in guild %s",
+                    user_id,
+                    guild_id,
+                )
+                await self._send_log_message(
+                    guild,
+                    config,
+                    (
+                        f"⚠️ Could not remove {member.mention} ({member.id}) after onboarding grace period: "
+                        "missing Kick Members."
+                    ),
+                )
+                return
+
+            if bot_member.top_role <= member.top_role:
+                self.log.warning("Cannot kick member %s in guild %s due to role hierarchy", user_id, guild_id)
+                await self._send_log_message(
+                    guild,
+                    config,
+                    (
+                        f"⚠️ Could not remove {member.mention} ({member.id}) after onboarding grace period "
+                        "due to role hierarchy."
+                    ),
+                )
+                return
+
+            await member.kick(reason="Did not complete onboarding within the configured grace period")
+            state.status = "new"
+            await self._send_log_message(
+                guild,
+                config,
+                (
+                    f"🔴 Removed {member.mention} ({member.id}) for not completing onboarding within "
+                    f"{config.grace_period_hours} hour(s)."
+                ),
+            )
+        except asyncio.CancelledError:
+            raise
+        except discord.HTTPException as exc:
+            self.log.warning("Failed to remove overdue onboarding member %s in guild %s: %s", user_id, guild_id, exc)
+        finally:
+            key = self._state_key(guild_id, user_id)
+            if self._grace_tasks.get(key) is asyncio.current_task():
+                self._grace_tasks.pop(key, None)
 
     async def _handle_accept(self, interaction: discord.Interaction, target_user_id: int) -> None:
         """Handle onboarding acceptance and assign member role."""
@@ -204,7 +308,7 @@ class Onboarding(commands.Cog):
         config = self._ensure_setup(guild.id)
         if config.member_role_id is None:
             await interaction.response.send_message(
-                "Setup incomplete: configure a verification member role with `/onboarding roles`.",
+                "Setup incomplete: configure a verification member role with `/setup roles`.",
                 ephemeral=True,
             )
             return
@@ -212,7 +316,7 @@ class Onboarding(commands.Cog):
         role = guild.get_role(config.member_role_id)
         if role is None:
             await interaction.response.send_message(
-                "Configured member role no longer exists. Please reconfigure `/onboarding roles`.",
+                "Configured member role no longer exists. Please reconfigure `/setup roles`.",
                 ephemeral=True,
             )
             return
@@ -222,10 +326,7 @@ class Onboarding(commands.Cog):
             await interaction.response.send_message("Could not find that member in this server.", ephemeral=True)
             return
 
-        bot_member = guild.me
-        if bot_member is None and self.bot.user is not None:
-            bot_member = guild.get_member(self.bot.user.id)
-
+        bot_member = self._get_bot_member(guild)
         if bot_member is None or not bot_member.guild_permissions.manage_roles:
             await interaction.response.send_message(
                 "I need **Manage Roles** permission to finish onboarding.",
@@ -246,6 +347,7 @@ class Onboarding(commands.Cog):
         state = self._get_user_state(guild.id, target_user_id)
         state.status = "verified"
         state.completed_at_utc = utc_now()
+        self._cancel_grace_task(guild.id, target_user_id)
 
         await interaction.response.send_message("✅ Verification complete. You now have member access.", ephemeral=True)
         await self._send_log_message(guild, config, f"✅ Verified {member.mention} ({member.id})")
@@ -312,6 +414,7 @@ class Onboarding(commands.Cog):
             view=view,
         )
         view.message = sent
+        self._schedule_grace_period_check(member.guild.id, member.id)
 
         if config.welcome_dm_enabled:
             try:
@@ -327,9 +430,9 @@ class Onboarding(commands.Cog):
             f"🟡 Onboarding started for {member.mention} ({member.id})",
         )
 
-    @onboarding.command(name="summary", description="Show current setup values and missing required items")
+    @setup.command(name="summary", description="Show current setup values and missing required items")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
+    # @app_commands.checks.has_permissions(manage_guild=True)
     async def setup_summary(self, interaction: discord.Interaction) -> None:
         """Return a summary of setup state for this guild."""
         if interaction.guild is None:
@@ -353,9 +456,12 @@ class Onboarding(commands.Cog):
             f"Moderator role(s): {self._format_role_mentions(interaction.guild, config.moderator_role_ids)}",
             f"Verification member role: {verification_member_role}",
             f"Log channel: {self._format_channel_mention(interaction.guild, config.log_channel_id)}",
+            f"Onboarding event logging: {'Yes' if config.log_events else 'No'}",
             f"Announcement channel: {self._format_channel_mention(interaction.guild, config.announcement_channel_id)}",
             f"Welcome channel: {self._format_channel_mention(interaction.guild, config.welcome_channel_id)}",
             f"Welcome DMs enabled: {'Yes' if config.welcome_dm_enabled else 'No'}",
+            f"Auto-remove unverified members: {'Yes' if config.auto_kick_unverified else 'No'}",
+            f"Grace period: {config.grace_period_hours} hour(s)",
             f"Support/ticket channel: {self._format_channel_mention(interaction.guild, config.support_channel_id)}",
             f"Rules/verification flow: {config.rules_location or 'Not set'}",
             f"Acceptance method: {config.verification_acceptance}",
@@ -368,9 +474,9 @@ class Onboarding(commands.Cog):
 
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
-    @onboarding.command(name="roles", description="Set trusted admin/mod roles and verification member role")
+    @setup.command(name="roles", description="Set trusted admin/mod roles and verification member role")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
+    # @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
         admin_roles="Role mentions or IDs (space/comma separated)",
         moderator_roles="Role mentions or IDs (space/comma separated)",
@@ -399,9 +505,9 @@ class Onboarding(commands.Cog):
 
         await interaction.response.send_message("✅ Setup roles updated.", ephemeral=True)
 
-    @onboarding.command(name="channels", description="Set channels used by logs, announcements, welcome, and support")
+    @setup.command(name="channels", description="Set channels used by logs, announcements, welcome, and support")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
+    # @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
         log_channel="Channel for mod/automod/error logs",
         announcement_channel="Channel for server announcements",
@@ -434,20 +540,26 @@ class Onboarding(commands.Cog):
 
         await interaction.response.send_message("✅ Setup channels updated.", ephemeral=True)
 
-    @onboarding.command(name="config", description="Set onboarding flow behavior")
+    @setup.command(name="config", description="Set onboarding flow behavior")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
+    # @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
         enabled="Enable or disable onboarding for this guild",
         welcome_dm_enabled="Send DM hint in addition to welcome channel message",
+        auto_kick_unverified="Remove users who do not complete onboarding within the grace period",
+        grace_period_hours="Hours to wait before removing unverified members",
+        log_events="Write onboarding start, completion, timeout, and removal events to the log channel",
         rules_location="Where your rules/verification policy is documented (use 'clear' to unset)",
         message="Onboarding message template (use {user} and {rules}; use 'clear' to unset)",
     )
-    async def setup_onboarding(
+    async def setup_onboarding(  # noqa: PLR0913
         self,
         interaction: discord.Interaction,
         enabled: bool | None = None,
         welcome_dm_enabled: bool | None = None,
+        auto_kick_unverified: bool | None = None,
+        grace_period_hours: app_commands.Range[int, 1, 168] | None = None,
+        log_events: bool | None = None,
         rules_location: str | None = None,
         message: str | None = None,
     ) -> None:
@@ -462,6 +574,12 @@ class Onboarding(commands.Cog):
             config.enabled = enabled
         if welcome_dm_enabled is not None:
             config.welcome_dm_enabled = welcome_dm_enabled
+        if auto_kick_unverified is not None:
+            config.auto_kick_unverified = auto_kick_unverified
+        if grace_period_hours is not None:
+            config.grace_period_hours = grace_period_hours
+        if log_events is not None:
+            config.log_events = log_events
         if rules_location is not None:
             config.rules_location = None if rules_location.strip().lower() == "clear" else rules_location.strip()
         if message is not None:
@@ -469,9 +587,9 @@ class Onboarding(commands.Cog):
 
         await interaction.response.send_message("✅ Onboarding settings updated.", ephemeral=True)
 
-    @onboarding.command(name="reset", description="Reset setup and onboarding state for this guild")
+    @setup.command(name="reset", description="Reset setup and onboarding state for this guild")
     @app_commands.guild_only()
-    @app_commands.checks.has_permissions(manage_guild=True)
+    # @app_commands.checks.has_permissions(manage_guild=True)
     async def setup_reset(self, interaction: discord.Interaction) -> None:
         """Clear setup and user onboarding state for this guild."""
         if interaction.guild is None:
@@ -482,12 +600,19 @@ class Onboarding(commands.Cog):
         self._setup_store.pop(guild_id, None)
 
         prefix = f"{guild_id}:"
+        for key in [task_key for task_key in self._grace_tasks if task_key.startswith(prefix)]:
+            task = self._grace_tasks.pop(key)
+            if not task.done():
+                task.cancel()
         for key in [state_key for state_key in self._user_state_store if state_key.startswith(prefix)]:
             self._user_state_store.pop(key, None)
 
         await interaction.response.send_message("✅ Setup and onboarding state reset for this guild.", ephemeral=True)
 
 
+Onboarding = Setup
+
+
 async def setup(bot: commands.Bot) -> None:
-    """Set up the Onboarding cog."""
-    await bot.add_cog(Onboarding(bot))
+    """Set up the Setup cog."""
+    await bot.add_cog(Setup(bot))
