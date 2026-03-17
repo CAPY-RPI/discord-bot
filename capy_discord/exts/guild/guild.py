@@ -89,7 +89,10 @@ class GuildCog(commands.Cog):
 
     async def _open_roles(self, interaction: discord.Interaction, settings: GuildSettings) -> None:
         """Launch the role settings modal pre-filled with current values."""
-        initial = {"admin": settings.admin_role, "member": settings.member_role}
+        initial = {
+            "admin": settings.admin_role,
+            "member": settings.member_role,
+        }
         modal = ModelModal(
             model_cls=RoleSettingsForm, callback=self._handle_roles, title="Role Settings", initial_data=initial
         )
