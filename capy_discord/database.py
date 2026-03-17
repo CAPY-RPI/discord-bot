@@ -572,7 +572,14 @@ async def init_database_pool(
     """Initialize and return the global backend client."""
     async with _client_lock:
         if _client_state.client is not None:
-            return _client_state.client
+            if _client_state.client.is_started:
+                return _client_state.client
+
+            # Recreate a stopped cached client (e.g., closed directly or via context manager).
+            client = BackendAPIClient(database_url, config=config)
+            await client.start()
+            _client_state.client = client
+            return client
 
         client = BackendAPIClient(database_url, config=config)
         await client.start()

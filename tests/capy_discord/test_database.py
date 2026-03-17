@@ -114,6 +114,22 @@ async def test_init_database_pool_is_idempotent():
 
 
 @pytest.mark.asyncio
+async def test_init_database_pool_recreates_stopped_cached_client():
+    await close_database_pool()
+
+    first = await init_database_pool("http://localhost:8080")
+    await first.close()
+
+    second = await init_database_pool("http://localhost:8080")
+
+    assert first is not second
+    assert second.is_started is True
+    assert second is get_database_pool()
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
 async def test_close_database_pool_is_idempotent():
     await close_database_pool()
     await init_database_pool("http://localhost:8080")
