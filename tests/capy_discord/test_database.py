@@ -67,9 +67,9 @@ async def test_unstarted_client_raises_not_initialized_error():
 
 
 def test_normalize_api_base_url_behaviors():
-    assert _normalize_api_base_url("http://localhost:8080") == "http://localhost:8080/v1"
-    assert _normalize_api_base_url("http://localhost:8080/") == "http://localhost:8080/v1"
-    assert _normalize_api_base_url("https://api.example.com/v1") == "https://api.example.com/v1"
+    assert _normalize_api_base_url("http://localhost:8080") == "http://localhost:8080/v1/"
+    assert _normalize_api_base_url("http://localhost:8080/") == "http://localhost:8080/v1/"
+    assert _normalize_api_base_url("https://api.example.com/v1") == "https://api.example.com/v1/"
 
     with pytest.raises(BackendConfigurationError, match="base_url must be set"):
         _normalize_api_base_url("   ")
@@ -137,7 +137,7 @@ async def test_list_events_makes_expected_request(mock_request):
     assert events[0].get("eid") == "evt-1"
     kwargs = mock_request.call_args.kwargs
     assert kwargs["method"] == "GET"
-    assert kwargs["url"] == "/events"
+    assert kwargs["url"] == "events"
     assert kwargs["params"] == {"limit": 10, "offset": 5}
 
     await close_database_pool()
@@ -160,11 +160,11 @@ async def test_register_and_unregister_event_use_expected_status_codes(mock_requ
     unregister_kwargs = mock_request.await_args_list[1].kwargs
 
     assert register_kwargs["method"] == "POST"
-    assert register_kwargs["url"] == "/events/evt-1/register"
+    assert register_kwargs["url"] == "events/evt-1/register"
     assert register_kwargs["json"] == {"uid": "user-1", "is_attending": True}
 
     assert unregister_kwargs["method"] == "DELETE"
-    assert unregister_kwargs["url"] == "/events/evt-1/register"
+    assert unregister_kwargs["url"] == "events/evt-1/register"
     assert unregister_kwargs["params"] == {"uid": "user-1"}
 
     await close_database_pool()
@@ -199,7 +199,7 @@ async def test_list_events_by_organization_uses_swagger_path(mock_request):
     assert events[0].get("eid") == "evt-2"
     kwargs = mock_request.call_args.kwargs
     assert kwargs["method"] == "GET"
-    assert kwargs["url"] == "/events/org/org-1"
+    assert kwargs["url"] == "events/org/org-1"
     assert kwargs["params"] == {"limit": 20, "offset": 0}
 
     await close_database_pool()
@@ -246,7 +246,7 @@ async def test_auth_redirect_does_not_require_json_payload(mock_request):
 
     kwargs = mock_request.call_args.kwargs
     assert kwargs["method"] == "GET"
-    assert kwargs["url"] == "/auth/google"
+    assert kwargs["url"] == "auth/google"
 
     await close_database_pool()
 
@@ -262,7 +262,7 @@ async def test_auth_callback_uses_query_params(mock_request):
 
     kwargs = mock_request.call_args.kwargs
     assert kwargs["method"] == "GET"
-    assert kwargs["url"] == "/auth/google/callback"
+    assert kwargs["url"] == "auth/google/callback"
     assert kwargs["params"] == {"code": "abc", "state": "xyz"}
 
     await close_database_pool()
@@ -284,8 +284,8 @@ async def test_auth_microsoft_redirect_and_callback(mock_request):
     first_kwargs = mock_request.await_args_list[0].kwargs
     second_kwargs = mock_request.await_args_list[1].kwargs
 
-    assert first_kwargs["url"] == "/auth/microsoft"
-    assert second_kwargs["url"] == "/auth/microsoft/callback"
+    assert first_kwargs["url"] == "auth/microsoft"
+    assert second_kwargs["url"] == "auth/microsoft/callback"
     assert second_kwargs["params"] == {"code": "mcode", "state": "mstate"}
 
     await close_database_pool()
@@ -302,7 +302,7 @@ async def test_auth_logout_uses_no_content_status(mock_request):
 
     kwargs = mock_request.call_args.kwargs
     assert kwargs["method"] == "POST"
-    assert kwargs["url"] == "/auth/logout"
+    assert kwargs["url"] == "auth/logout"
 
     await close_database_pool()
 
@@ -368,11 +368,11 @@ async def test_bot_endpoints_use_expected_paths(mock_request):
     third_kwargs = mock_request.await_args_list[2].kwargs
     fourth_kwargs = mock_request.await_args_list[3].kwargs
 
-    assert first_kwargs["url"] == "/bot/me"
-    assert second_kwargs["url"] == "/bot/tokens"
-    assert third_kwargs["url"] == "/bot/tokens"
+    assert first_kwargs["url"] == "bot/me"
+    assert second_kwargs["url"] == "bot/tokens"
+    assert third_kwargs["url"] == "bot/tokens"
     assert third_kwargs["json"] == {"name": "new-token"}
-    assert fourth_kwargs["url"] == "/bot/tokens/t-2"
+    assert fourth_kwargs["url"] == "bot/tokens/t-2"
 
     await close_database_pool()
 
@@ -405,7 +405,7 @@ async def test_organization_endpoints_use_expected_paths(mock_request):
     assert org_events[0].get("eid") == "evt-1"
 
     list_kwargs = mock_request.await_args_list[0].kwargs
-    assert list_kwargs["url"] == "/organizations"
+    assert list_kwargs["url"] == "organizations"
     assert list_kwargs["params"] == {"limit": 5, "offset": 0}
 
     await close_database_pool()
@@ -503,10 +503,10 @@ async def test_organization_member_endpoints_use_expected_paths(mock_request):
     add_kwargs = mock_request.await_args_list[1].kwargs
     remove_kwargs = mock_request.await_args_list[2].kwargs
 
-    assert list_kwargs["url"] == "/organizations/org-1/members"
-    assert add_kwargs["url"] == "/organizations/org-1/members"
+    assert list_kwargs["url"] == "organizations/org-1/members"
+    assert add_kwargs["url"] == "organizations/org-1/members"
     assert add_kwargs["json"] == {"uid": "user-2", "is_admin": False}
-    assert remove_kwargs["url"] == "/organizations/org-1/members/user-2"
+    assert remove_kwargs["url"] == "organizations/org-1/members/user-2"
 
     await close_database_pool()
 
@@ -539,10 +539,10 @@ async def test_user_endpoints_use_expected_paths(mock_request):
     update_kwargs = mock_request.await_args_list[1].kwargs
     delete_kwargs = mock_request.await_args_list[2].kwargs
 
-    assert get_kwargs["url"] == "/users/user-1"
-    assert update_kwargs["url"] == "/users/user-1"
+    assert get_kwargs["url"] == "users/user-1"
+    assert update_kwargs["url"] == "users/user-1"
     assert update_kwargs["json"] == {"first_name": "Grace"}
-    assert delete_kwargs["url"] == "/users/user-1"
+    assert delete_kwargs["url"] == "users/user-1"
 
     await close_database_pool()
 

@@ -494,9 +494,10 @@ class BackendAPIClient:
         """Execute a backend API request and enforce expected status codes."""
         self._ensure_started()
         statuses = expected_statuses or {HTTP_STATUS_OK}
+        request_url = _normalize_request_path(path)
 
         try:
-            response = await self._client.request(method=method, url=path, params=params, json=json_body)
+            response = await self._client.request(method=method, url=request_url, params=params, json=json_body)
         except httpx.HTTPError as exc:
             msg = f"HTTP request failed for {method} {path}"
             raise BackendAPIError(msg, status_code=0) from exc
@@ -535,9 +536,10 @@ class BackendAPIClient:
         """Execute a backend API request where response body parsing is not required."""
         self._ensure_started()
         statuses = expected_statuses or {HTTP_STATUS_OK}
+        request_url = _normalize_request_path(path)
 
         try:
-            response = await self._client.request(method=method, url=path, params=params)
+            response = await self._client.request(method=method, url=request_url, params=params)
         except httpx.HTTPError as exc:
             msg = f"HTTP request failed for {method} {path}"
             raise BackendAPIError(msg, status_code=0) from exc
@@ -604,9 +606,15 @@ def _normalize_api_base_url(base_url: str) -> str:
         raise BackendConfigurationError(msg)
 
     if cleaned.endswith("/v1"):
-        return cleaned
+        return f"{cleaned}/"
 
-    return f"{cleaned}/v1"
+    return f"{cleaned}/v1/"
+
+
+def _normalize_request_path(path: str) -> str:
+    if path.startswith(("http://", "https://")):
+        return path
+    return path.lstrip("/")
 
 
 def _optional_params(**values: Any) -> dict[str, Any] | None:  # noqa: ANN401
