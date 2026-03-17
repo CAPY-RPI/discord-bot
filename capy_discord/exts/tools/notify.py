@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from capy_discord.errors import UserFriendlyError
-from capy_discord.services import dm
+from capy_discord.services import dm, policies
 
 
 class Notify(commands.Cog):
@@ -29,19 +29,9 @@ class Notify(commands.Cog):
             await interaction.response.send_message("This must be used in a server.", ephemeral=True)
             return
 
-        policy = dm.Policy(
-            allowed_user_ids=frozenset({interaction.user.id}),
-            max_recipients=1,
-        )
-        audience = dm.Audience(user_ids=(interaction.user.id,))
+        policy = policies.allow_users(interaction.user.id, max_recipients=1)
 
-        draft = await dm.compose(
-            guild,
-            message,
-            audience=audience,
-            policy=policy,
-            reason="self-test notify command",
-        )
+        draft = await dm.compose_to_user(guild, interaction.user.id, message, policy=policy)
         self.log.info("Notify preview\n%s", dm.render_preview(draft))
 
         result = await dm.send(guild, draft)

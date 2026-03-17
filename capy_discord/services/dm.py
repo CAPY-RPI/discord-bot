@@ -1,9 +1,4 @@
-"""Internal-safe direct message helpers.
-
-Developers should define a narrow policy near each DM use site and compose
-drafts through this module. The API intentionally has no guild-wide or
-implicit audience modes.
-"""
+"""Internal-safe direct message helpers."""
 
 from __future__ import annotations
 
@@ -24,33 +19,15 @@ class DmSafetyError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class Audience:
-    """Requested audience selectors for a DM draft."""
-
-    user_ids: tuple[int, ...] = ()
-    role_ids: tuple[int, ...] = ()
-
-    def __post_init__(self) -> None:
-        """Validate that the audience is explicit and non-empty."""
-        if not self.user_ids and not self.role_ids:
-            msg = "DM audience must include at least one user ID or role ID."
-            raise DmSafetyError(msg)
-
-
-@dataclass(frozen=True, slots=True)
 class Policy:
     """Allowlist and cap used to validate a DM request."""
 
     allowed_user_ids: frozenset[int] = frozenset()
     allowed_role_ids: frozenset[int] = frozenset()
     max_recipients: int = DEFAULT_MAX_RECIPIENTS
-    require_reason: bool = True
 
     def __post_init__(self) -> None:
-        """Validate policy bounds and require an explicit allowlist."""
-        if not self.allowed_user_ids and not self.allowed_role_ids:
-            msg = "DM policy must allow at least one explicit user ID or role ID."
-            raise DmSafetyError(msg)
+        """Validate policy bounds."""
         if self.max_recipients < 1:
             msg = "DM policy max_recipients must be at least 1."
             raise DmSafetyError(msg)
@@ -86,7 +63,6 @@ class Draft:
     preview: AudiencePreview
     payload: MessagePayload
     policy: Policy
-    reason: str
     created_at: datetime = field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
 
 
@@ -110,33 +86,62 @@ class DirectMessenger:
         guild: discord.Guild,
         content: str,
         *,
-        audience: Audience,
-        policy: Policy,
-        reason: str,
+        user_ids: tuple[int, ...] = (),
+        role_ids: tuple[int, ...] = (),
+        policy: Policy | None = None,
     ) -> Draft:
         """Validate the requested audience and return a DM draft."""
-        normalized_content = self._normalize_content(content)
-        normalized_reason = self._normalize_reason(reason, policy)
-        self._validate_allowed_audience(audience, policy, guild.default_role.id)
-        preview = await self._resolve_audience(guild, audience=audience)
-        self._validate_send_policy(policy, preview)
+        return await self._compose(
+            guild,
+            content,
+            user_ids=user_ids,
+            role_ids=role_ids,
+            policy=self._resolve_policy(policy),
+        )
 
-        draft = Draft(
-            guild_id=guild.id,
-            preview=preview,
-            payload=MessagePayload(content=normalized_content),
-            policy=policy,
-            reason=normalized_reason,
-        )
-        self.log.info(
-            "DM draft composed guild=%s users=%s roles=%s recipients=%s reason=%s",
-            guild.id,
-            len(preview.source_user_ids),
-            len(preview.source_role_ids),
-            preview.recipient_count,
-            normalized_reason,
-        )
-        return draft
+    async def compose_to_user(
+        self,
+        guild: discord.Guild,
+        user_id: int,
+        content: str,
+        *,
+        policy: Policy | None = None,
+    ) -> Draft:
+        """Compose a DM draft for a single user."""
+        return await self.compose(guild, content, user_ids=(user_id,), policy=policy)
+
+    async def compose_to_users(
+        self,
+        guild: discord.Guild,
+        user_ids: tuple[int, ...],
+        content: str,
+        *,
+        policy: Policy | None = None,
+    ) -> Draft:
+        """Compose a DM draft for explicit users."""
+        return await self.compose(guild, content, user_ids=user_ids, policy=policy)
+
+    async def compose_to_role(
+        self,
+        guild: discord.Guild,
+        role_id: int,
+        content: str,
+        *,
+        policy: Policy | None = None,
+    ) -> Draft:
+        """Compose a DM draft for a single role."""
+        return await self.compose(guild, content, role_ids=(role_id,), policy=policy)
+
+    async def compose_to_roles(
+        self,
+        guild: discord.Guild,
+        role_ids: tuple[int, ...],
+        content: str,
+        *,
+        policy: Policy | None = None,
+    ) -> Draft:
+        """Compose a DM draft for explicit roles."""
+        return await self.compose(guild, content, role_ids=role_ids, policy=policy)
 
     async def send(self, guild: discord.Guild, draft: Draft) -> SendResult:
         """Send a validated DM draft."""
@@ -158,12 +163,11 @@ class DirectMessenger:
                 result.failed_ids.append(recipient.id)
 
         self.log.info(
-            "DM batch complete guild=%s recipients=%s sent=%s failed=%s reason=%s",
+            "DM batch complete guild=%s recipients=%s sent=%s failed=%s",
             guild.id,
             draft.preview.recipient_count,
             result.sent_count,
             len(result.failed_ids),
-            draft.reason,
         )
         return result
 
@@ -176,7 +180,6 @@ class DirectMessenger:
 
         return (
             f"DM draft for guild={draft.guild_id}\n"
-            f"Reason: {draft.reason}\n"
             f"Recipients: {draft.preview.recipient_count}\n"
             f"Skipped IDs: {len(draft.preview.skipped_ids)}\n"
             f"Source user IDs: {len(draft.preview.source_user_ids)}\n"
@@ -185,50 +188,94 @@ class DirectMessenger:
             f"Message:\n{draft.payload.content}"
         )
 
+    async def _compose(
+        self,
+        guild: discord.Guild,
+        content: str,
+        *,
+        user_ids: tuple[int, ...],
+        role_ids: tuple[int, ...],
+        policy: Policy,
+    ) -> Draft:
+        normalized_content = self._normalize_content(content)
+        self._validate_requested_audience(user_ids, role_ids, policy, guild.default_role.id)
+        preview = await self._resolve_audience(guild, user_ids=user_ids, role_ids=role_ids)
+        self._validate_send_policy(policy, preview)
+
+        draft = Draft(
+            guild_id=guild.id,
+            preview=preview,
+            payload=MessagePayload(content=normalized_content),
+            policy=policy,
+        )
+        self.log.info(
+            "DM draft composed guild=%s users=%s roles=%s recipients=%s",
+            guild.id,
+            len(preview.source_user_ids),
+            len(preview.source_role_ids),
+            preview.recipient_count,
+        )
+        return draft
+
+    def _resolve_policy(self, policy: Policy | None) -> Policy:
+        if policy is not None:
+            return policy
+
+        return Policy()
+
     def _normalize_content(self, content: str) -> str:
         normalized = content.strip()
         if not normalized:
             msg = "DM content must not be empty."
             raise DmSafetyError(msg)
         if len(normalized) > MAX_MESSAGE_LENGTH:
-            msg = "DM content cannot exceed 2000 characters."
+            msg = f"DM content cannot exceed {MAX_MESSAGE_LENGTH} characters."
             raise DmSafetyError(msg)
         return normalized
 
-    def _normalize_reason(self, reason: str, policy: Policy) -> str:
-        normalized = reason.strip()
-        if policy.require_reason and not normalized:
-            msg = "DM reason is required."
+    def _validate_requested_audience(
+        self,
+        user_ids: tuple[int, ...],
+        role_ids: tuple[int, ...],
+        policy: Policy,
+        default_role_id: int,
+    ) -> None:
+        if not user_ids and not role_ids:
+            msg = "DM request must include at least one explicit user ID or role ID."
             raise DmSafetyError(msg)
-        return normalized
 
-    def _validate_allowed_audience(self, audience: Audience, policy: Policy, default_role_id: int) -> None:
-        if default_role_id in audience.role_ids or default_role_id in policy.allowed_role_ids:
+        if default_role_id in role_ids or default_role_id in policy.allowed_role_ids:
             msg = "The @everyone role cannot be used in DM policies or requests."
             raise DmSafetyError(msg)
 
-        disallowed_users = set(audience.user_ids) - set(policy.allowed_user_ids)
+        disallowed_users = set(user_ids) - set(policy.allowed_user_ids)
         if disallowed_users:
             msg = f"DM request includes user IDs outside the allowed policy: {sorted(disallowed_users)}"
             raise DmSafetyError(msg)
 
-        disallowed_roles = set(audience.role_ids) - set(policy.allowed_role_ids)
+        disallowed_roles = set(role_ids) - set(policy.allowed_role_ids)
         if disallowed_roles:
             msg = f"DM request includes role IDs outside the allowed policy: {sorted(disallowed_roles)}"
             raise DmSafetyError(msg)
 
-    async def _resolve_audience(self, guild: discord.Guild, *, audience: Audience) -> AudiencePreview:
+    async def _resolve_audience(
+        self,
+        guild: discord.Guild,
+        *,
+        user_ids: tuple[int, ...],
+        role_ids: tuple[int, ...],
+    ) -> AudiencePreview:
         recipients_by_id: dict[int, discord.Member] = {}
         skipped_ids: list[int] = []
 
-        for user_id in audience.user_ids:
+        for user_id in user_ids:
             member = await self._resolve_member(guild, user_id)
             if member is None:
                 skipped_ids.append(user_id)
                 continue
             recipients_by_id[member.id] = member
 
-        for role_id in audience.role_ids:
+        for role_id in role_ids:
             role = guild.get_role(role_id)
             if role is None:
                 skipped_ids.append(role_id)
@@ -246,8 +293,8 @@ class DirectMessenger:
         return AudiencePreview(
             recipients=list(recipients_by_id.values()),
             skipped_ids=skipped_ids,
-            source_user_ids=audience.user_ids,
-            source_role_ids=audience.role_ids,
+            source_user_ids=user_ids,
+            source_role_ids=role_ids,
         )
 
     def _validate_send_policy(self, policy: Policy, preview: AudiencePreview) -> None:
@@ -276,12 +323,56 @@ async def compose(
     guild: discord.Guild,
     content: str,
     *,
-    audience: Audience,
-    policy: Policy,
-    reason: str,
+    user_ids: tuple[int, ...] = (),
+    role_ids: tuple[int, ...] = (),
+    policy: Policy | None = None,
 ) -> Draft:
     """Compose a DM draft through the shared messenger."""
-    return await _MESSENGER.compose(guild, content, audience=audience, policy=policy, reason=reason)
+    return await _MESSENGER.compose(guild, content, user_ids=user_ids, role_ids=role_ids, policy=policy)
+
+
+async def compose_to_user(
+    guild: discord.Guild,
+    user_id: int,
+    content: str,
+    *,
+    policy: Policy | None = None,
+) -> Draft:
+    """Compose a DM draft for a single user."""
+    return await _MESSENGER.compose_to_user(guild, user_id, content, policy=policy)
+
+
+async def compose_to_users(
+    guild: discord.Guild,
+    user_ids: tuple[int, ...],
+    content: str,
+    *,
+    policy: Policy | None = None,
+) -> Draft:
+    """Compose a DM draft for explicit users."""
+    return await _MESSENGER.compose_to_users(guild, user_ids, content, policy=policy)
+
+
+async def compose_to_role(
+    guild: discord.Guild,
+    role_id: int,
+    content: str,
+    *,
+    policy: Policy | None = None,
+) -> Draft:
+    """Compose a DM draft for a single role."""
+    return await _MESSENGER.compose_to_role(guild, role_id, content, policy=policy)
+
+
+async def compose_to_roles(
+    guild: discord.Guild,
+    role_ids: tuple[int, ...],
+    content: str,
+    *,
+    policy: Policy | None = None,
+) -> Draft:
+    """Compose a DM draft for explicit roles."""
+    return await _MESSENGER.compose_to_roles(guild, role_ids, content, policy=policy)
 
 
 async def send(guild: discord.Guild, draft: Draft) -> SendResult:

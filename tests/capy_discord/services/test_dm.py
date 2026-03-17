@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 import pytest
 
-from capy_discord.services import dm
+from capy_discord.services import dm, policies
 
 
 def make_member(member_id: int) -> MagicMock:
@@ -16,32 +16,43 @@ def make_member(member_id: int) -> MagicMock:
 
 
 @pytest.mark.asyncio
+async def test_compose_defaults_to_deny_all_policy():
+    guild = MagicMock(spec=discord.Guild)
+    guild.default_role.id = 999
+
+    with pytest.raises(dm.DmSafetyError, match="outside the allowed policy"):
+        await dm.compose_to_user(
+            guild,
+            42,
+            "Hello",
+        )
+
+
+@pytest.mark.asyncio
 async def test_compose_rejects_everyone_role():
     guild = MagicMock(spec=discord.Guild)
     guild.default_role.id = 1
 
     with pytest.raises(dm.DmSafetyError, match="@everyone"):
-        await dm.compose(
+        await dm.compose_to_role(
             guild,
+            1,
             "Hello",
-            audience=dm.Audience(role_ids=(1,)),
-            policy=dm.Policy(allowed_role_ids=frozenset({1})),
-            reason="test everyone rejection",
+            policy=policies.allow_roles(1),
         )
 
 
 @pytest.mark.asyncio
-async def test_compose_rejects_audience_outside_policy():
+async def test_compose_to_user_rejects_target_outside_policy():
     guild = MagicMock(spec=discord.Guild)
     guild.default_role.id = 999
 
     with pytest.raises(dm.DmSafetyError, match="outside the allowed policy"):
-        await dm.compose(
+        await dm.compose_to_user(
             guild,
+            42,
             "Hello",
-            audience=dm.Audience(user_ids=(42,)),
-            policy=dm.Policy(allowed_user_ids=frozenset({7})),
-            reason="test policy mismatch",
+            policy=policies.allow_users(7),
         )
 
 
@@ -60,13 +71,13 @@ async def test_compose_deduplicates_users_from_roles_and_explicit_ids():
     draft = await dm.compose(
         guild,
         "Hello",
-        audience=dm.Audience(user_ids=(42,), role_ids=(7,)),
-        policy=dm.Policy(
-            allowed_user_ids=frozenset({42}),
-            allowed_role_ids=frozenset({7}),
+        user_ids=(42,),
+        role_ids=(7,),
+        policy=policies.allow_targets(
+            user_ids=frozenset({42}),
+            role_ids=frozenset({7}),
             max_recipients=1,
         ),
-        reason="test dedupe",
     )
 
     assert draft.preview.recipient_count == 1
@@ -82,15 +93,11 @@ async def test_compose_rejects_audience_above_cap():
     guild.get_member.side_effect = [make_member(1), make_member(2)]
 
     with pytest.raises(dm.DmSafetyError, match="exceeds the cap"):
-        await dm.compose(
+        await dm.compose_to_users(
             guild,
+            (1, 2),
             "Hello",
-            audience=dm.Audience(user_ids=(1, 2)),
-            policy=dm.Policy(
-                allowed_user_ids=frozenset({1, 2}),
-                max_recipients=1,
-            ),
-            reason="test cap enforcement",
+            policy=policies.allow_users(1, 2, max_recipients=1),
         )
 
 
@@ -109,8 +116,7 @@ async def test_send_tracks_failures():
         guild_id=123,
         preview=dm.AudiencePreview(recipients=[ok_member, blocked_member]),
         payload=dm.MessagePayload(content="Hello"),
-        policy=dm.Policy(allowed_user_ids=frozenset({1, 2}), max_recipients=2),
-        reason="test send failures",
+        policy=policies.allow_users(1, 2, max_recipients=2),
     )
 
     result = await dm.send(guild, draft)
