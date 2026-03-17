@@ -32,7 +32,7 @@ class Notify(commands.Cog):
         policy = policies.allow_users(interaction.user.id, max_recipients=1)
 
         draft = await dm.compose_to_user(guild, interaction.user.id, message, policy=policy)
-        self.log.info("Notify preview\n%s", dm.render_preview(draft))
+        self.log.debug("Notify preview\n%s", dm.render_preview(draft))
 
         result = await dm.send(guild, draft)
         if result.sent_count != 1:
