@@ -630,20 +630,42 @@ def _pagination_params(*, limit: int | None = None, offset: int | None = None) -
     return cast("dict[str, int]", params)
 
 
-def _typed_dict(payload: dict[str, Any] | list[dict[str, Any]] | None) -> dict[str, Any]:
+def _typed_dict(
+    payload: dict[str, Any] | list[dict[str, Any]] | None,
+    *,
+    status_code: int = HTTP_STATUS_OK,
+) -> dict[str, Any]:
+    """Validate and return dict payload.
+
+    Args:
+        payload: The payload to validate
+        status_code: HTTP status code to include in error (default: HTTP_STATUS_OK).
+                     Pass actual response status for accurate error reporting.
+    """
     if isinstance(payload, dict):
         return payload
 
     msg = "Expected object payload from backend"
-    raise BackendAPIError(msg, status_code=HTTP_STATUS_OK)
+    raise BackendAPIError(msg, status_code=status_code)
 
 
-def _typed_list(payload: dict[str, Any] | list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+def _typed_list(
+    payload: dict[str, Any] | list[dict[str, Any]] | None,
+    *,
+    status_code: int = HTTP_STATUS_OK,
+) -> list[dict[str, Any]]:
+    """Validate and return list payload.
+
+    Args:
+        payload: The payload to validate
+        status_code: HTTP status code to include in error (default: HTTP_STATUS_OK).
+                     Pass actual response status for accurate error reporting.
+    """
     if isinstance(payload, list):
         return payload
 
     msg = "Expected list payload from backend"
-    raise BackendAPIError(msg, status_code=HTTP_STATUS_OK)
+    raise BackendAPIError(msg, status_code=status_code)
 
 
 def _response_json(response: httpx.Response) -> object:
