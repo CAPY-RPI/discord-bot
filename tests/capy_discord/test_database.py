@@ -10,7 +10,6 @@ from capy_discord.database import (
     BackendClientConfig,
     BackendClientNotInitializedError,
     BackendConfigurationError,
-    HTTP_STATUS_BAD_REQUEST,
     HTTP_STATUS_CREATED,
     HTTP_STATUS_NOT_FOUND,
     _normalize_api_base_url,
@@ -253,142 +252,17 @@ async def test_invalid_json_response_raises_backend_api_error(mock_request):
 
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.request", new_callable=AsyncMock)
-async def test_auth_redirect_does_not_require_json_payload(mock_request):
+async def test_bot_me_endpoint_uses_expected_path(mock_request):
     await close_database_pool()
-    mock_request.return_value = _FakeInvalidJsonResponse(302)
-
-    client = await init_database_pool("http://localhost:8080")
-    await client.auth_google_redirect()
-
-    kwargs = mock_request.call_args.kwargs
-    assert kwargs["method"] == "GET"
-    assert kwargs["url"] == "auth/google"
-
-    await close_database_pool()
-
-
-@pytest.mark.asyncio
-@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
-async def test_auth_callback_uses_query_params(mock_request):
-    await close_database_pool()
-    mock_request.return_value = _FakeInvalidJsonResponse(302)
-
-    client = await init_database_pool("http://localhost:8080")
-    await client.auth_google_callback(code="abc", state="xyz")
-
-    kwargs = mock_request.call_args.kwargs
-    assert kwargs["method"] == "GET"
-    assert kwargs["url"] == "auth/google/callback"
-    assert kwargs["params"] == {"code": "abc", "state": "xyz"}
-
-    await close_database_pool()
-
-
-@pytest.mark.asyncio
-@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
-async def test_auth_microsoft_redirect_and_callback(mock_request):
-    await close_database_pool()
-    mock_request.side_effect = [
-        _FakeInvalidJsonResponse(302),
-        _FakeInvalidJsonResponse(302),
-    ]
-
-    client = await init_database_pool("http://localhost:8080")
-    await client.auth_microsoft_redirect()
-    await client.auth_microsoft_callback(code="mcode", state="mstate")
-
-    first_kwargs = mock_request.await_args_list[0].kwargs
-    second_kwargs = mock_request.await_args_list[1].kwargs
-
-    assert first_kwargs["url"] == "auth/microsoft"
-    assert second_kwargs["url"] == "auth/microsoft/callback"
-    assert second_kwargs["params"] == {"code": "mcode", "state": "mstate"}
-
-    await close_database_pool()
-
-
-@pytest.mark.asyncio
-@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
-async def test_auth_logout_uses_no_content_status(mock_request):
-    await close_database_pool()
-    mock_request.return_value = _FakeResponse(204, None)
-
-    client = await init_database_pool("http://localhost:8080")
-    await client.auth_logout()
-
-    kwargs = mock_request.call_args.kwargs
-    assert kwargs["method"] == "POST"
-    assert kwargs["url"] == "auth/logout"
-
-    await close_database_pool()
-
-
-@pytest.mark.asyncio
-@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
-async def test_auth_me_and_refresh_return_expected_payloads(mock_request):
-    await close_database_pool()
-    mock_request.side_effect = [
-        _FakeResponse(200, {"uid": "u-1", "email": "user@example.com"}),
-        _FakeResponse(200, {"token": "jwt", "user": {"uid": "u-1"}}),
-    ]
-
-    client = await init_database_pool("http://localhost:8080")
-    me = await client.auth_me()
-    refreshed = await client.auth_refresh()
-
-    assert me.get("uid") == "u-1"
-    assert refreshed.get("token") == "jwt"
-
-    await close_database_pool()
-
-
-@pytest.mark.asyncio
-@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
-async def test_auth_callback_bad_request_raises_backend_api_error(mock_request):
-    await close_database_pool()
-    mock_request.return_value = _FakeResponse(HTTP_STATUS_BAD_REQUEST, {"message": "invalid callback"})
-
-    client = await init_database_pool("http://localhost:8080")
-
-    with pytest.raises(BackendAPIError) as exc_info:
-        await client.auth_google_callback(code="bad", state="bad")
-
-    assert exc_info.value.status_code == HTTP_STATUS_BAD_REQUEST
-
-    await close_database_pool()
-
-
-@pytest.mark.asyncio
-@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
-async def test_bot_endpoints_use_expected_paths(mock_request):
-    await close_database_pool()
-    mock_request.side_effect = [
-        _FakeResponse(200, {"token_id": "t-1", "name": "bot-token"}),
-        _FakeResponse(200, [{"token_id": "t-1"}]),
-        _FakeResponse(HTTP_STATUS_CREATED, {"token_id": "t-2", "token": "secret"}),
-        _FakeResponse(204, None),
-    ]
+    mock_request.return_value = _FakeResponse(200, {"token_id": "t-1", "name": "bot-token"})
 
     client = await init_database_pool("http://localhost:8080")
     me = await client.bot_me()
-    tokens = await client.list_bot_tokens()
-    created = await client.create_bot_token({"name": "new-token"})
-    await client.revoke_bot_token("t-2")
 
     assert me.get("token_id") == "t-1"
-    assert tokens[0].get("token_id") == "t-1"
-    assert created.get("token_id") == "t-2"
 
-    first_kwargs = mock_request.await_args_list[0].kwargs
-    second_kwargs = mock_request.await_args_list[1].kwargs
-    third_kwargs = mock_request.await_args_list[2].kwargs
-    fourth_kwargs = mock_request.await_args_list[3].kwargs
-
-    assert first_kwargs["url"] == "bot/me"
-    assert second_kwargs["url"] == "bot/tokens"
-    assert third_kwargs["url"] == "bot/tokens"
-    assert third_kwargs["json"] == {"name": "new-token"}
-    assert fourth_kwargs["url"] == "bot/tokens/t-2"
+    kwargs = mock_request.call_args.kwargs
+    assert kwargs["url"] == "bot/me"
 
     await close_database_pool()
 

@@ -272,66 +272,10 @@ class BackendAPIClient:
         """Whether this client has been initialized and is ready."""
         return self._started
 
-    async def auth_me(self) -> UserAuthResponse:
-        """Call `GET /auth/me`."""
-        payload = await self._request("GET", "/auth/me")
-        return cast("UserAuthResponse", _typed_dict(payload))
-
-    async def auth_refresh(self) -> AuthResponse:
-        """Call `POST /auth/refresh`."""
-        payload = await self._request("POST", "/auth/refresh")
-        return cast("AuthResponse", _typed_dict(payload))
-
-    async def auth_logout(self) -> None:
-        """Call `POST /auth/logout`."""
-        await self._request("POST", "/auth/logout", expected_statuses={HTTP_STATUS_NO_CONTENT})
-
-    async def auth_google_redirect(self) -> None:
-        """Call `GET /auth/google` expecting redirect status."""
-        await self._request_without_response_body("GET", "/auth/google", expected_statuses={HTTP_STATUS_FOUND})
-
-    async def auth_google_callback(self, *, code: str, state: str) -> None:
-        """Call `GET /auth/google/callback` expecting redirect status."""
-        params = {"code": code, "state": state}
-        await self._request_without_response_body(
-            "GET",
-            "/auth/google/callback",
-            params=params,
-            expected_statuses={HTTP_STATUS_FOUND},
-        )
-
-    async def auth_microsoft_redirect(self) -> None:
-        """Call `GET /auth/microsoft` expecting redirect status."""
-        await self._request_without_response_body("GET", "/auth/microsoft", expected_statuses={HTTP_STATUS_FOUND})
-
-    async def auth_microsoft_callback(self, *, code: str, state: str) -> None:
-        """Call `GET /auth/microsoft/callback` expecting redirect status."""
-        params = {"code": code, "state": state}
-        await self._request_without_response_body(
-            "GET",
-            "/auth/microsoft/callback",
-            params=params,
-            expected_statuses={HTTP_STATUS_FOUND},
-        )
-
     async def bot_me(self) -> BotTokenResponse:
         """Call `GET /bot/me`."""
         payload = await self._request("GET", "/bot/me")
         return cast("BotTokenResponse", _typed_dict(payload))
-
-    async def list_bot_tokens(self) -> list[BotTokenResponse]:
-        """Call `GET /bot/tokens`."""
-        payload = await self._request("GET", "/bot/tokens")
-        return cast("list[BotTokenResponse]", _typed_list(payload))
-
-    async def create_bot_token(self, data: CreateBotTokenRequest) -> BotTokenResponse:
-        """Call `POST /bot/tokens`."""
-        payload = await self._request("POST", "/bot/tokens", json_body=data, expected_statuses={HTTP_STATUS_CREATED})
-        return cast("BotTokenResponse", _typed_dict(payload))
-
-    async def revoke_bot_token(self, token_id: str) -> None:
-        """Call `DELETE /bot/tokens/{token_id}`."""
-        await self._request("DELETE", f"/bot/tokens/{token_id}", expected_statuses={HTTP_STATUS_NO_CONTENT})
 
     async def list_events(self, *, limit: int | None = None, offset: int | None = None) -> list[EventResponse]:
         """Call `GET /events`."""
