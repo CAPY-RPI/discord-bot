@@ -1,727 +1,447 @@
-# Phase 3 Tech Spec: Telemetry API Export
+# Phase 3 — Telemetry API & Database
 
-## Context
+## Phase Context
 
-Phases 1-2b are complete. The bot captures every Discord interaction, queues events via `asyncio.Queue`, processes them every second into in-memory metrics (`TelemetryMetrics`), and writes structured debug logs. All data stays in-process and resets on bot restart.
+| Phase | Status | What it did |
+|-------|--------|-------------|
+| 2a | Complete | Async queue buffering — events enqueued in-process, consumed by background task |
+| 2b | Complete | In-memory analytics — `TelemetryMetrics` counters, latency stats, `get_metrics()` accessor |
+| **3** | **Planned** | Persist events to PostgreSQL via an external API gateway |
+| 4 | Future | Web dashboard consuming the Phase 3 data |
 
-Phase 3 adds a **batched HTTP export layer**: events are buffered in a secondary list and periodically POSTed to the CAPY core API gateway (`https://api.capyrpi.org/v1/telemetry`), which persists them to PostgreSQL. The bot owns transport only — no direct DB connection.
+This document covers Phase 3. The bot code already captures and queues all events correctly — Phase 3 wires the queue consumer to POST batches to the API instead of (or in addition to) logging them.
 
 ---
 
-## Architecture Overview
-
-asdfsadf
+## System Overview
 
 ```
-Discord Event
-      │
-      ▼
+Discord event
+     │
+     ▼
 on_interaction / on_app_command_completion / log_command_failure
-      │
-      ▼
-asyncio.Queue (existing, maxsize=1000)
-      │
-      ▼ every 1s (_consumer_task — existing)
-_dispatch_event()
-   ├── _log_interaction / _log_completion       (existing — file log)
-   ├── _record_*_metrics()                      (existing — in-memory)
-   └── _api_buffer.append(event.data)           ← NEW
-      │
-      ▼ every 30s (_flush_task — NEW)
-_flush_to_api()
-      │
-      ▼
-TelemetryApiClient.post_telemetry_batch()      ← NEW (_api_client.py)
-   ├── _build_payload() → TelemetryBatchPayload (Pydantic)
-   ├── OAuth client credentials token (Authentik)
-   └── POST https://api.capyrpi.org/v1/telemetry
-      │
-      ▼
-API Gateway → PostgreSQL
+     │  (non-blocking, never raises)
+     ▼
+asyncio.Queue (max 1000 events, drop on full)
+     │
+     ▼  (background task, every 1.0s)
+POST /v1/telemetry/batch  ──►  API Gateway  ──►  PostgreSQL
+                                                 ├── telemetry_interactions
+                                                 └── telemetry_completions
 ```
+
+The bot never connects to the database directly. The API gateway owns the database, validates payloads, and writes rows. The bot only POSTs batches.
 
 ---
 
-## API Schema Design
+## Bot-Side Behavior
 
-### `POST /v1/telemetry` — Request Body
+These constants in `telemetry.py` govern how events flow through the bot:
 
-Mixed batch: both `interaction` and `completion` events in one `events` array.
-`event_type` is the discriminator. The API links them via `correlation_id` at query time.
+| Constant | Value | Meaning |
+|----------|-------|---------|
+| `_QUEUE_MAX_SIZE` | `1000` | Hard cap on the in-memory queue. Events are **dropped** (not buffered elsewhere) if the queue is full. |
+| `_CONSUMER_INTERVAL_SECONDS` | `1.0` | Background task drains the queue every second. |
+| `_STALE_THRESHOLD_SECONDS` | `60` | Pending entries older than 60s with no completion are deleted to prevent memory leaks. This happens on every `on_interaction` call. |
 
-```json
-{
-  "bot_version": "0.1.0",
-  "sent_at": "2026-02-20T14:32:01.123456Z",
-  "events": [
-    {
-      "event_type": "interaction",
-      "correlation_id": "a3f9c1d20b4e",
-      "timestamp": "2026-02-20T14:31:58.442000Z",
-      "interaction_type": "slash_command",
-      "user_id": 123456789012345678,
-      "username": "alice#0001",
-      "command_name": "ping",
-      "guild_id": 987654321098765432,
-      "guild_name": "CAPY Server",
-      "channel_id": 111222333444555666,
-      "options": {"arg1": "value"}
-    },
-    {
-      "event_type": "completion",
-      "correlation_id": "a3f9c1d20b4e",
-      "timestamp": "2026-02-20T14:31:58.551000Z",
-      "command_name": "ping",
-      "status": "success",
-      "duration_ms": 109.3,
-      "error_type": null
-    }
-  ]
-}
-```
+### Event capture
 
-**Field notes:**
-- `sent_at` — envelope timestamp for measuring pipeline lag.
-- `bot_version` — correlates incidents to deployments.
-- `user_id`, `guild_id`, `channel_id` — 64-bit Discord snowflakes stored as `bigint` in Postgres.
-- `guild_id` / `guild_name` — nullable (DM interactions have no guild).
-- `options` — stored as JSONB on the API side.
-- `error_type` — only present on completion events with non-success status.
-- `interaction_type` values: `slash_command`, `button`, `dropdown`, `modal`, `autocomplete`.
-- `status` values: `success`, `user_error`, `internal_error`.
+Three entry points populate the queue:
 
-### Response
+| Entry point | Fires when | Produces |
+|------------|-----------|---------|
+| `on_interaction` | Every user interaction with the bot | `interaction` event |
+| `on_app_command_completion` | Slash command resolves successfully | `completion` event (`status: success`) |
+| `log_command_failure` | Called from `bot.py`'s `on_tree_error` | `completion` event (`status: user_error` or `internal_error`) |
 
-**202 Accepted:**
-```json
-{"accepted": 12, "batch_id": "uuid-string"}
-```
+**Buttons and modals** produce an `interaction` event but never a `completion` — `on_app_command_completion` only fires for slash commands.
 
-**400 Bad Request:**
-```json
-{"error": "validation_error", "detail": "events[2].event_type must be 'interaction' or 'completion'"}
-```
+**Autocomplete** interactions (`interaction_type: autocomplete`) fire on every keystroke while a user types a slash command argument. These are currently captured but should be filtered out before Phase 3 — they are high-frequency noise with no analytical value.
 
-**401 Unauthorized:**
-```json
-{"error": "unauthorized"}
-```
+### Correlation ID
 
-The bot only inspects the HTTP status code. Non-2xx → log warning + drop batch.
-
----
-
-### `GET /v1/telemetry/events` — Paginated Event List
-
-Returns raw events from the database with filtering and pagination. Used by future tooling and the Phase 4 dashboard.
-
-**Query parameters:**
-
-| Parameter | Type | Description |
-|---|---|---|
-| `event_type` | `interaction` \| `completion` | Filter to one event type |
-| `command_name` | string | Filter by command name |
-| `guild_id` | integer | Filter to a specific guild |
-| `user_id` | integer | Filter to a specific user |
-| `status` | `success` \| `user_error` \| `internal_error` | Filter completions by status |
-| `from` | ISO 8601 UTC | Start of time range (inclusive) |
-| `to` | ISO 8601 UTC | End of time range (inclusive) |
-| `limit` | integer | Results per page. Default: `50`, max: `500` |
-| `offset` | integer | Pagination offset. Default: `0` |
-
-**Response (200 OK):**
-```json
-{
-  "total": 1250,
-  "limit": 50,
-  "offset": 0,
-  "events": [
-    {
-      "event_type": "interaction",
-      "correlation_id": "a3f9c1d20b4e",
-      "timestamp": "2026-02-20T14:31:58.442000Z",
-      "received_at": "2026-02-20T14:32:01.100000Z",
-      "interaction_type": "slash_command",
-      "user_id": 123456789012345678,
-      "username": "alice#0001",
-      "command_name": "ping",
-      "guild_id": 987654321098765432,
-      "guild_name": "CAPY Server",
-      "channel_id": 111222333444555666,
-      "options": {},
-      "bot_version": "0.1.0"
-    },
-    {
-      "event_type": "completion",
-      "correlation_id": "a3f9c1d20b4e",
-      "timestamp": "2026-02-20T14:31:58.551000Z",
-      "received_at": "2026-02-20T14:32:01.100000Z",
-      "command_name": "ping",
-      "status": "success",
-      "duration_ms": 109.3,
-      "error_type": null,
-      "bot_version": "0.1.0"
-    }
-  ]
-}
-```
-
-`received_at` is the server-side ingestion timestamp (set by the API). The difference between `timestamp` and `received_at` is the pipeline lag.
-
----
-
-### `GET /v1/telemetry/metrics` — Aggregate Statistics
-
-Returns pre-aggregated metrics computed from the database over an optional time window. Designed for the future `/stats` Discord command and the Phase 4 dashboard.
-
-**Query parameters:**
-
-| Parameter | Type | Description |
-|---|---|---|
-| `from` | ISO 8601 UTC | Start of time range. Default: 30 days ago |
-| `to` | ISO 8601 UTC | End of time range. Default: now |
-| `guild_id` | integer | Scope metrics to a specific guild |
-
-**Response (200 OK):**
-```json
-{
-  "period": {
-    "from": "2026-01-01T00:00:00Z",
-    "to": "2026-01-31T23:59:59Z"
-  },
-  "totals": {
-    "interactions": 4821,
-    "unique_users": 142,
-    "guilds_active": 3
-  },
-  "by_type": {
-    "slash_command": 3201,
-    "button": 1100,
-    "modal": 420,
-    "dropdown": 100
-  },
-  "top_commands": [
-    {"command": "ping",    "invocations": 850, "success_rate": 0.99, "avg_latency_ms": 112.3},
-    {"command": "profile", "invocations": 720, "success_rate": 0.97, "avg_latency_ms": 234.1},
-    {"command": "help",    "invocations": 510, "success_rate": 1.0,  "avg_latency_ms":  88.4}
-  ],
-  "completions": {
-    "success": 3150,
-    "user_error": 42,
-    "internal_error": 9
-  },
-  "top_errors": [
-    {"error_type": "UserFriendlyError", "count": 38},
-    {"error_type": "RuntimeError",      "count":  9}
-  ]
-}
-```
-
-`top_commands` is computed via a JOIN between `telemetry_interactions` and `telemetry_completions` on `correlation_id`, grouped by `command_name`, ordered by `invocations DESC`, limited to 10.
-
-`success_rate` = `success_count / total_completions` for that command. `avg_latency_ms` excludes failed completions.
-
----
-
-## OAuth Client Credentials Flow
-
-Service-to-service auth using Authentik's OAuth 2.0 client credentials grant.
-
-**Flow:**
-1. Bot POSTs `grant_type=client_credentials` + credentials to the Authentik token endpoint.
-2. Authentik returns `{"access_token": "...", "expires_in": 3600, "token_type": "Bearer"}`.
-3. Bot caches token; attaches `Authorization: Bearer <token>` to every telemetry request.
-4. On 401: discard cached token, re-fetch, retry once. Log + drop on second failure.
-5. Token pre-emptively refreshed when < 60 seconds remain (`expires_in - 30s` buffer).
-
-**No-auth mode:** If `TELEMETRY_OAUTH_URL` is empty, skip token fetch. Useful for local dev if the API accepts unauthenticated requests.
-
-**Disabled mode:** If `TELEMETRY_ENABLED=false` (the default), `post_telemetry_batch` is a no-op returning `True`. No HTTP calls are made. The buffer still accumulates locally but is never flushed. This is the primary safety guard — prevents accidental calls in environments without credentials.
-
-> **Action required:** The API team needs to provision an Authentik service account for the bot and provide `TELEMETRY_OAUTH_URL`, `TELEMETRY_CLIENT_ID`, and `TELEMETRY_CLIENT_SECRET`. The implementation can proceed before credentials are issued since `TELEMETRY_ENABLED=false` is the default.
-
----
-
-## New Files
-
-### `capy_discord/exts/core/_api_client.py`
-
-HTTP client with OAuth token management. Underscore prefix prevents the extension loader from treating it as a cog.
-
-**Classes and functions:**
-```python
-@dataclass
-class _OAuthToken:
-    access_token: str
-    expires_at: datetime   # UTC; now + expires_in - 30s
-
-class _TokenFetchError(Exception): ...   # raised by _fetch_token on non-2xx
-
-def _build_payload(events: list[dict[str, Any]], bot_version: str) -> dict[str, Any]:
-    # Validates each event via Pydantic, wraps in TelemetryBatchPayload,
-    # returns model_dump(mode="json") — fully JSON-serializable dict
-
-class TelemetryApiClient:
-    def __init__(self, settings: Settings) -> None
-    async def start(self) -> None          # creates httpx.AsyncClient (not in __init__)
-    async def close(self) -> None          # awaits _http.aclose()
-    async def post_telemetry_batch(self, events: list[dict[str, Any]]) -> bool
-    async def _get_valid_token(self) -> str
-    async def _fetch_token(self) -> str    # POSTs to token endpoint; raises _TokenFetchError
-    async def _build_headers(self) -> dict[str, str]
-```
-
-**httpx timeout (constants, not config):**
-```python
-httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
-```
-
-**`post_telemetry_batch` logic:**
-1. Return `True` early if `telemetry_enabled=False` or empty batch.
-2. Build payload via `_build_payload`.
-3. Build headers via `_build_headers` (fetches/caches OAuth token if configured).
-4. POST to `telemetry_api_url`.
-5. On 401: `self._token = None` → rebuild headers → retry once.
-6. On `response.is_success`: debug log, return `True`.
-7. On non-2xx or any exception: log warning/exception, return `False`. Never re-raise.
-
-**`bot_version`:** Retrieved in `start()` via `importlib.metadata.version("capy-discord")`. Defaults to `"unknown"` on `PackageNotFoundError`.
-
----
-
-### `capy_discord/exts/core/_schemas.py`
-
-Pydantic `BaseModel` classes for API payload serialization.
+On every `on_interaction`, the bot generates a 12-character hex ID:
 
 ```python
-class InteractionEventPayload(BaseModel):
-    event_type: Literal["interaction"]
-    correlation_id: str
-    timestamp: datetime
-    interaction_type: str
-    user_id: int
-    username: str
-    command_name: str | None
-    guild_id: int | None
-    guild_name: str | None
-    channel_id: int
-    options: dict[str, Any] = Field(default_factory=dict)
-
-class CompletionEventPayload(BaseModel):
-    event_type: Literal["completion"]
-    correlation_id: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    command_name: str
-    status: Literal["success", "user_error", "internal_error"]
-    duration_ms: float
-    error_type: str | None = None
-
-class TelemetryBatchPayload(BaseModel):
-    bot_version: str
-    sent_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    events: list[InteractionEventPayload | CompletionEventPayload]
+correlation_id = uuid.uuid4().hex[:12]  # e.g. "a3f9c1d20b4e"
 ```
 
-`model_dump(mode="json")` handles `datetime` → ISO 8601 string serialization automatically.
+It stores `(correlation_id, start_time_monotonic)` in `_pending[interaction.id]`. When the completion fires, the bot pops the entry, computes `duration_ms`, and includes the same `correlation_id` in the completion event. This is the only link between the two rows in the database — there is intentionally no FK constraint.
 
-`CompletionEventPayload.timestamp` defaults to `datetime.now(UTC)` because existing completion events don't carry a wall-clock timestamp (only `duration_ms`).
+If a completion fires for an interaction that has no pending entry (missed event, race condition, or stale cleanup), the bot falls back to `correlation_id = "unknown"` and `duration_ms` measured from that moment — effectively 0ms.
 
 ---
 
-### `tests/capy_discord/exts/core/__init__.py`
+## Schema
 
-Empty. Creates the package directory for the new test file. This directory does not currently exist.
-
----
-
-### `tests/capy_discord/exts/core/test_api_client.py`
-
-See Test Strategy section below.
-
----
-
-## Modified Files
-
-### `pyproject.toml`
-
-Add to `[project].dependencies`:
-```toml
-"httpx>=0.28.0",
-```
-
-No additional test dependency needed. `unittest.mock.AsyncMock` patches `httpx.AsyncClient` methods directly.
-
----
-
-### `capy_discord/config.py`
-
-Add to `Settings` after existing fields:
-```python
-# Telemetry API Export (Phase 3)
-telemetry_enabled: bool = False
-telemetry_api_url: str = "https://api.capyrpi.org/v1/telemetry"
-telemetry_oauth_url: str = ""
-telemetry_client_id: str = ""
-telemetry_client_secret: str = ""  # noqa: S105
-telemetry_batch_size: int = 100
-telemetry_flush_interval: int = 30
-```
-
-**Env vars (pydantic-settings flat field mapping):**
-
-| Field | Env var | Default |
-|---|---|---|
-| `telemetry_enabled` | `TELEMETRY_ENABLED` | `false` |
-| `telemetry_api_url` | `TELEMETRY_API_URL` | `https://api.capyrpi.org/v1/telemetry` |
-| `telemetry_oauth_url` | `TELEMETRY_OAUTH_URL` | `""` |
-| `telemetry_client_id` | `TELEMETRY_CLIENT_ID` | `""` |
-| `telemetry_client_secret` | `TELEMETRY_CLIENT_SECRET` | `""` |
-| `telemetry_batch_size` | `TELEMETRY_BATCH_SIZE` | `100` |
-| `telemetry_flush_interval` | `TELEMETRY_FLUSH_INTERVAL` | `30` |
-
-`# noqa: S105` on `telemetry_client_secret` — Ruff's `S105` flags the field name as a potential hardcoded secret, but the empty string is explicitly not a secret.
-
----
-
-### `capy_discord/exts/core/telemetry.py`
-
-**New imports:**
-```python
-from capy_discord.config import settings as _settings
-from capy_discord.exts.core._api_client import TelemetryApiClient
-```
-
-**New module constant (evaluated once at import; drives `tasks.loop`):**
-```python
-_FLUSH_INTERVAL_SECONDS: int = _settings.telemetry_flush_interval
-```
-
-**`__init__` additions:**
-```python
-self._api_buffer: list[dict[str, Any]] = []
-self._api_client = TelemetryApiClient(_settings)
-```
-
-`_api_buffer` is a plain list — only ever accessed from the event loop sequentially, no concurrency concern.
-
-**Updated `cog_load`:**
-```python
-async def cog_load(self) -> None:
-    await self._api_client.start()
-    self._consumer_task.start()
-    self._flush_task.start()
-```
-
-**Updated `cog_unload`:**
-```python
-async def cog_unload(self) -> None:
-    self._flush_task.cancel()
-    self._consumer_task.cancel()
-    self._drain_queue()         # processes remaining queue events into _api_buffer
-    await self._flush_to_api()  # best-effort final flush
-    await self._api_client.close()
-```
-
-Ordering is critical: cancel tasks first → drain queue (populates buffer) → flush → close client.
-
-**New `_flush_task`:**
-```python
-@tasks.loop(seconds=_FLUSH_INTERVAL_SECONDS)
-async def _flush_task(self) -> None:
-    await self._flush_to_api()
-
-@_flush_task.before_loop
-async def _before_flush(self) -> None:
-    await self.bot.wait_until_ready()
-```
-
-**New `_flush_to_api`:**
-```python
-async def _flush_to_api(self) -> None:
-    """Flush up to batch_size buffered events to the telemetry API.
-
-    Snapshots and clears the buffer before the HTTP call so new events
-    continue accumulating while the request is in flight.
-
-    On failure, events are logged-and-dropped (not re-queued). On shutdown,
-    only one batch is flushed; events beyond batch_size are dropped.
-    """
-    if not self._api_buffer:
-        return
-    batch = self._api_buffer[:_settings.telemetry_batch_size]
-    del self._api_buffer[:_settings.telemetry_batch_size]
-    self.log.debug("Flushing %d telemetry events to API", len(batch))
-    await self._api_client.post_telemetry_batch(batch)
-```
-
-**Modified `_dispatch_event`** — append to `_api_buffer` after existing processing:
-```python
-if event.event_type == "interaction":
-    self._log_interaction(event.data)
-    self._record_interaction_metrics(event.data)
-    self._api_buffer.append(event.data)          # NEW
-elif event.event_type == "completion":
-    self._log_completion(**event.data)
-    self._record_completion_metrics(event.data)
-    self._api_buffer.append(event.data)          # NEW
-else:
-    self.log.warning(...)                        # unchanged; unknown types skip buffer
-```
-
-**Update module docstring** (change "Phase 2b" header to "Phase 3") and `cog_load` info log:
-```python
-self.log.info(
-    "Telemetry cog initialized - Phase 3: API export (enabled=%s)",
-    _settings.telemetry_enabled,
-)
-```
-
----
-
-### `tests/capy_discord/exts/test_telemetry.py`
-
-Add a second fixture for flush-related tests (keeps existing `cog` fixture untouched):
-
-```python
-@pytest.fixture
-def cog_with_mock_client(bot):
-    with patch.object(Telemetry, "cog_load", return_value=None):
-        c = Telemetry(bot)
-    c.log = MagicMock()
-    c._api_client = MagicMock()
-    c._api_client.post_telemetry_batch = AsyncMock(return_value=True)
-    return c
-```
-
-**New tests (8 functions):**
-
-| Test | What it verifies |
-|---|---|
-| `test_dispatch_event_populates_api_buffer` | Interaction event appended to `_api_buffer` |
-| `test_dispatch_completion_populates_api_buffer` | Completion event appended to `_api_buffer` |
-| `test_dispatch_unknown_type_does_not_populate_buffer` | `event_type="bogus"` skips buffer |
-| `test_flush_to_api_clears_buffer` | 3 events in → 0 remaining after flush |
-| `test_flush_to_api_empty_buffer_no_http_call` | Empty buffer → `post_telemetry_batch` never called |
-| `test_flush_to_api_respects_batch_size` | `batch_size + 10` events → 10 remain after flush |
-| `test_flush_to_api_drops_on_api_failure` | `post_telemetry_batch` returns `False` → buffer still cleared |
-| `test_cog_unload_flushes_remaining_buffer` | `_drain_queue()` + `_flush_to_api()` sequence calls `post_telemetry_batch` |
-
----
-
-## Test Strategy: `tests/capy_discord/exts/core/test_api_client.py`
-
-Mock strategy: after `await client.start()` creates the real `httpx.AsyncClient`, override `client._http.post` with `AsyncMock`.
-
-**Token management (7 tests):**
-- `test_fetch_token_success` — POST returns `{"access_token": "tok", "expires_in": 3600}`, assert token cached
-- `test_fetch_token_failure_raises` — POST returns 500, assert `_TokenFetchError` raised
-- `test_get_valid_token_uses_cache` — valid unexpired token in cache, assert no second HTTP call
-- `test_get_valid_token_refreshes_expired` — `expires_at` in the past, assert `_fetch_token` called
-- `test_build_headers_with_oauth` — assert `{"Authorization": "Bearer tok"}` returned
-- `test_build_headers_without_oauth_url` — `telemetry_oauth_url=""`, assert `{}` returned
-- `test_build_headers_token_failure_returns_empty` — `_TokenFetchError` in `_get_valid_token`, assert `{}` returned and no exception propagates
-
-**`post_telemetry_batch` (8 tests):**
-- `test_post_batch_success` — 202 → `True`, debug logged
-- `test_post_batch_disabled_returns_true` — `telemetry_enabled=False` → `True`, no HTTP call
-- `test_post_batch_empty_returns_true` — `[]` → `True`, no HTTP call
-- `test_post_batch_401_retries_once` — first 401, second 202 → `True`, POST called exactly twice
-- `test_post_batch_401_retry_also_fails` — both 401 → `False`, warning logged
-- `test_post_batch_non_2xx_drops` — 500 → `False`, warning logged
-- `test_post_batch_network_error_drops` — `httpx.ConnectError` → `False`, exception logged, does not re-raise
-- `test_post_batch_timeout_drops` — `httpx.TimeoutException` → `False`
-
----
-
-## End-to-End Flow (user runs `/ping`)
-
-1. `on_interaction` fires → 12-char `correlation_id` generated → `TelemetryEvent("interaction", data)` put on `asyncio.Queue`
-2. `Ping` cog handles the command independently, sends pong embed
-3. `on_app_command_completion` fires → `duration_ms` computed → `TelemetryEvent("completion", data)` enqueued
-4. **1 second later** — `_consumer_task` drains queue → `_dispatch_event` runs for both events:
-   - Writes to telemetry log file (existing)
-   - Updates in-memory `TelemetryMetrics` counters (existing)
-   - Appends both event dicts to `_api_buffer` (new)
-5. **At 30-second mark** — `_flush_task` fires → `_flush_to_api()`:
-   - Snapshots up to 100 events from `_api_buffer`, clears them immediately
-   - Calls `await self._api_client.post_telemetry_batch(batch)`
-   - `_build_payload` validates each event via Pydantic, wraps in `TelemetryBatchPayload`, calls `model_dump(mode="json")`
-   - `_build_headers` fetches OAuth token from Authentik (or returns cached token)
-   - `httpx.AsyncClient.post("https://api.capyrpi.org/v1/telemetry", json=payload, headers=headers)`
-   - API gateway validates JWT, inserts rows into PostgreSQL, returns `202 {"accepted": 2}`
-   - Debug log: `"Telemetry batch of 2 events accepted"`
-6. Next 30-second cycle starts fresh
-
-**On 401:** `_token = None` → re-fetch from Authentik → retry once → log + drop on second failure.
-**On network failure:** `except Exception` → log exception → return `False` → buffer cleared → bot continues unaffected.
-**On shutdown:** Cancel tasks → drain remaining queue events into buffer → final flush (up to `batch_size` events) → close `httpx.AsyncClient`.
-
----
-
-## PostgreSQL Database Schema
-
-The API gateway owns all DDL. The bot never touches the database directly.
+Two append-only tables. The API gateway INSERTs into both; nothing is ever updated or deleted.
 
 ### `telemetry_interactions`
 
-Stores one row per interaction event (slash command invoked, button clicked, modal submitted, etc.).
+One row per Discord interaction (slash command, button click, modal submit, dropdown).
 
-```sql
-CREATE TABLE telemetry_interactions (
-    id               BIGSERIAL     PRIMARY KEY,
-    correlation_id   CHAR(12)      NOT NULL,
-    timestamp        TIMESTAMPTZ   NOT NULL,
-    received_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    interaction_type VARCHAR(20)   NOT NULL,
-    user_id          BIGINT        NOT NULL,
-    username         VARCHAR(100)  NOT NULL,
-    command_name     VARCHAR(100),
-    guild_id         BIGINT,
-    guild_name       VARCHAR(100),
-    channel_id       BIGINT        NOT NULL,
-    options          JSONB         NOT NULL DEFAULT '{}',
-    bot_version      VARCHAR(20)   NOT NULL DEFAULT 'unknown'
-);
-```
-
-**Column notes:**
-- `correlation_id CHAR(12)` — fixed-length hex string from `uuid.uuid4().hex[:12]`. Links to `telemetry_completions.correlation_id`.
-- `timestamp` — when the interaction occurred on Discord (from `interaction.created_at`, UTC).
-- `received_at` — when the API ingested the event. The delta `received_at - timestamp` = pipeline lag.
-- `interaction_type` — one of: `slash_command`, `button`, `dropdown`, `modal`, `autocomplete`.
-- `guild_id` / `guild_name` — nullable; `NULL` for DM interactions.
-- `command_name` — nullable; `NULL` for non-command interactions (e.g. button clicks without a named command).
-- `options JSONB` — slash command arguments, modal field values, or select menu values. Stored as JSONB for flexibility.
-- `bot_version` — bot deployment version at time of event. Useful for correlating regressions to releases.
-
----
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| `id` | `BIGSERIAL` | NO | Auto-incrementing surrogate PK — set by DB, never in payload |
+| `correlation_id` | `VARCHAR(12)` | NO | 12-char hex; links to completions via soft join |
+| `timestamp` | `TIMESTAMPTZ` | NO | When the interaction occurred (UTC) — from bot payload |
+| `received_at` | `TIMESTAMPTZ` | NO | When the API ingested it — set by API as `NOW()`, never in payload |
+| `interaction_type` | `VARCHAR(20)` | NO | See interaction type reference below |
+| `user_id` | `BIGINT` | NO | Discord snowflake — stable, immutable identifier |
+| `command_name` | `VARCHAR(100)` | YES | NULL for buttons and modals (see Phase 3 work items) |
+| `guild_id` | `BIGINT` | YES | NULL in DMs |
+| `guild_name` | `VARCHAR(100)` | YES | Guild name at time of event; NULL in DMs |
+| `channel_id` | `BIGINT` | NO | Discord snowflake |
+| `options` | `JSONB` | NO | Command args, modal field values, button custom_id, etc. Defaults to `{}` |
+| `bot_version` | `VARCHAR(20)` | NO | Bot version at time of event; defaults to `'unknown'` (see Phase 3 work items) |
 
 ### `telemetry_completions`
 
-Stores one row per command outcome (success or failure). Linked to `telemetry_interactions` via `correlation_id`.
+One row per command outcome. Slash commands only — buttons and modals do not produce completion rows.
 
-```sql
-CREATE TABLE telemetry_completions (
-    id             BIGSERIAL     PRIMARY KEY,
-    correlation_id CHAR(12)      NOT NULL,
-    timestamp      TIMESTAMPTZ   NOT NULL,
-    received_at    TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    command_name   VARCHAR(100)  NOT NULL,
-    status         VARCHAR(20)   NOT NULL,
-    duration_ms    NUMERIC(10,2),
-    error_type     VARCHAR(100),
-    bot_version    VARCHAR(20)   NOT NULL DEFAULT 'unknown',
+| Column | Type | Nullable | Notes |
+|--------|------|----------|-------|
+| `id` | `BIGSERIAL` | NO | Auto-incrementing surrogate PK — set by DB, never in payload |
+| `correlation_id` | `VARCHAR(12)` | NO | Links to `telemetry_interactions` via soft join |
+| `timestamp` | `TIMESTAMPTZ` | NO | When completion occurred (UTC) — from bot payload |
+| `received_at` | `TIMESTAMPTZ` | NO | When the API ingested it — set by API as `NOW()`, never in payload |
+| `command_name` | `VARCHAR(100)` | NO | Always present on completions |
+| `status` | `VARCHAR(20)` | NO | `success`, `user_error`, or `internal_error` |
+| `duration_ms` | `NUMERIC(10,2)` | YES | Command latency in milliseconds — measured bot-side with `time.monotonic()` |
+| `error_type` | `VARCHAR(100)` | YES | Python exception class name (`type(error).__name__`); NULL on success |
 
-    CONSTRAINT chk_completion_status
-        CHECK (status IN ('success', 'user_error', 'internal_error'))
-);
-```
+### Interaction type reference
 
-**Column notes:**
-- No `FOREIGN KEY` constraint to `telemetry_interactions` — correlation is soft (JOIN at query time). This avoids referential integrity failures if a completion arrives before its interaction in edge cases.
-- `duration_ms NUMERIC(10,2)` — nullable as a safety measure; should always be present from the bot but the API should not reject a batch over a missing value.
-- `error_type` — Python exception class name (e.g. `RuntimeError`, `UserFriendlyError`). NULL on `status = 'success'`.
-- `timestamp` — set to `datetime.now(UTC)` on the bot side at completion time (not interaction start time). See `CompletionEventPayload`.
+All possible values for `interaction_type`:
+
+| Value | Source | Has completion? |
+|-------|--------|----------------|
+| `slash_command` | User invoked a slash command | Yes |
+| `button` | User clicked a button component | No |
+| `modal` | User submitted a modal form | No |
+| `dropdown` | User selected from a select menu | No |
+| `autocomplete` | User is typing a command argument | No — **should be filtered pre-Phase 3** |
+| `component` | Component interaction, type unrecognised | No |
+| `unknown` | Interaction type not in the type map | No |
+
+### Design decisions
+
+- **No FK constraint between tables** — soft join via `correlation_id`. Avoids constraint failures if events arrive out of order or a completion has no matching interaction.
+- **`BIGINT` for Discord IDs** — Discord snowflakes are 64-bit integers and exceed `INTEGER` max.
+- **`JSONB` for `options`** — flexible, queryable, stored in Postgres binary format.
+- **`TIMESTAMPTZ` everywhere** — always timezone-aware, always stored as UTC.
+- **`BIGSERIAL` for surrogate PKs** — auto-increment; the bot never generates these.
+- **`CHECK` constraint on `status`** — the DB enforces the valid set, not just the API layer.
+- **`received_at` on both tables** — enables independent API ingestion lag measurement per event type (`received_at - timestamp`).
+- **`guild_name` stored, `username` not** — guild name is captured as historical context at event time. Guild names rarely change; storing the name makes logs readable without a Discord API lookup. Username changes frequently and is omitted; `user_id` is the stable identifier.
+- **`bot_version` on interactions only** — version cannot change between an interaction and its completion (same process, milliseconds apart). Get it from the interaction row via the join.
 
 ---
 
-### Indexes
+## Indexes
+
+6 indexes total — added only for queries that are actually run.
 
 ```sql
 -- telemetry_interactions
-CREATE INDEX idx_interactions_timestamp
-    ON telemetry_interactions (timestamp);
-
-CREATE INDEX idx_interactions_correlation_id
-    ON telemetry_interactions (correlation_id);
-
-CREATE INDEX idx_interactions_guild_id
-    ON telemetry_interactions (guild_id, timestamp)
-    WHERE guild_id IS NOT NULL;
-
-CREATE INDEX idx_interactions_command_name
-    ON telemetry_interactions (command_name, timestamp)
-    WHERE command_name IS NOT NULL;
-
-CREATE INDEX idx_interactions_user_id
-    ON telemetry_interactions (user_id);
-
-CREATE INDEX idx_interactions_type
-    ON telemetry_interactions (interaction_type, timestamp);
+CREATE INDEX idx_interactions_timestamp      ON telemetry_interactions (timestamp);
+CREATE INDEX idx_interactions_correlation_id ON telemetry_interactions (correlation_id);
+CREATE INDEX idx_interactions_command_name   ON telemetry_interactions (command_name, timestamp) WHERE command_name IS NOT NULL;
 
 -- telemetry_completions
-CREATE INDEX idx_completions_timestamp
-    ON telemetry_completions (timestamp);
-
-CREATE INDEX idx_completions_correlation_id
-    ON telemetry_completions (correlation_id);
-
-CREATE INDEX idx_completions_command_status
-    ON telemetry_completions (command_name, status);
-
-CREATE INDEX idx_completions_status_time
-    ON telemetry_completions (status, timestamp);
-
-CREATE INDEX idx_completions_error_type
-    ON telemetry_completions (error_type)
-    WHERE error_type IS NOT NULL;
+CREATE INDEX idx_completions_timestamp       ON telemetry_completions (timestamp);
+CREATE INDEX idx_completions_correlation_id  ON telemetry_completions (correlation_id);
+CREATE INDEX idx_completions_command_status  ON telemetry_completions (command_name, status);
 ```
 
-**Rationale:**
-- Time-range queries on `timestamp` are the most common access pattern for both the metrics endpoint and the events list endpoint.
-- `correlation_id` indexes enable efficient JOIN between the two tables for `top_commands` aggregation.
-- Partial indexes (`WHERE guild_id IS NOT NULL`, `WHERE error_type IS NOT NULL`) avoid indexing null rows, keeping index size smaller.
-- `idx_interactions_user_id` supports per-user filtering and `COUNT(DISTINCT user_id)` in metrics.
-
-**Not included in Phase 3:**
-- GIN index on `options JSONB` — not needed until queries inside `options` are required (Phase 4).
-- Table partitioning by `timestamp` — worth adding once row counts exceed ~10M. Defer to Phase 4.
-- `pg_cron` data retention job — suggested policy is 90 days, but the implementation is left to the API team.
+Indexes on `user_id`, `guild_id`, `interaction_type`, and `error_type` are intentionally omitted. Each index slows every INSERT. Add them only when a real slow query demonstrates the need.
 
 ---
 
-### Key Query Examples
+## DDL
 
-**Top commands (used by `GET /v1/telemetry/metrics`):**
+See [`db/schema.sql`](../db/schema.sql) for the full, runnable DDL.
+
+---
+
+## API Payload
+
+The bot POSTs a batch of events to the API gateway. `id` and `received_at` are never in the payload — they are set server-side.
+
+### Endpoint
+
+```
+POST /v1/telemetry/batch
+Content-Type: application/json
+Authorization: Bearer <api_key>   (scheme TBD)
+```
+
+### Request body
+
+```json
+{
+  "events": [ ...event objects... ]
+}
+```
+
+Each object has a `"type"` field (`"interaction"` or `"completion"`) that tells the API which table to write to. A single batch may contain a mix of both types in the order they were emitted.
+
+### Interaction event — slash command
+
+```json
+{
+  "type": "interaction",
+  "correlation_id": "a3f9c1d20b4e",
+  "timestamp": "2026-03-20T14:23:01.123456+00:00",
+  "interaction_type": "slash_command",
+  "user_id": 123456789012345678,
+  "command_name": "ping",
+  "guild_id": 987654321098765432,
+  "guild_name": "CAPY Server",
+  "channel_id": 111222333444555666,
+  "options": {},
+  "bot_version": "0.1.0"
+}
+```
+
+### Interaction event — slash command with arguments
+
+`options` is a flat dict. Subcommand arguments are dot-prefixed (`"subcommand.arg"`). Discord mention types (User, Role, Channel) are serialised to their snowflake ID.
+
+```json
+{
+  "type": "interaction",
+  "correlation_id": "b7e2d4f81c9a",
+  "timestamp": "2026-03-20T14:24:00.000000+00:00",
+  "interaction_type": "slash_command",
+  "user_id": 234567890123456789,
+  "command_name": "profile",
+  "guild_id": 987654321098765432,
+  "guild_name": "CAPY Server",
+  "channel_id": 111222333444555666,
+  "options": { "action": "view" },
+  "bot_version": "0.1.0"
+}
+```
+
+### Interaction event — button (DM, no guild)
+
+`command_name` will be `null` once the Phase 3 fix is applied (see work items). `custom_id` is in `options`.
+
+```json
+{
+  "type": "interaction",
+  "correlation_id": "c1a3b5d7e9f0",
+  "timestamp": "2026-03-20T14:25:00.000000+00:00",
+  "interaction_type": "button",
+  "user_id": 345678901234567890,
+  "command_name": null,
+  "guild_id": null,
+  "guild_name": null,
+  "channel_id": 222333444555666777,
+  "options": { "custom_id": "confirm_action" },
+  "bot_version": "0.1.0"
+}
+```
+
+### Interaction event — modal submit
+
+`options` contains each form field keyed by its `custom_id`.
+
+```json
+{
+  "type": "interaction",
+  "correlation_id": "e5f7a9b1c3d2",
+  "timestamp": "2026-03-20T14:26:00.000000+00:00",
+  "interaction_type": "modal",
+  "user_id": 234567890123456789,
+  "command_name": null,
+  "guild_id": 987654321098765432,
+  "guild_name": "CAPY Server",
+  "channel_id": 111222333444555666,
+  "options": { "reason": "This is my feedback text" },
+  "bot_version": "0.1.0"
+}
+```
+
+### Completion event — success
+
+```json
+{
+  "type": "completion",
+  "correlation_id": "a3f9c1d20b4e",
+  "timestamp": "2026-03-20T14:23:01.232456+00:00",
+  "command_name": "ping",
+  "status": "success",
+  "duration_ms": 109.3
+}
+```
+
+### Completion event — failure
+
+`error_type` is the Python exception class name (`type(error).__name__`). `CommandInvokeError` is unwrapped to its `.original` before classification and naming.
+
+```json
+{
+  "type": "completion",
+  "correlation_id": "d4e6f8a0b2c3",
+  "timestamp": "2026-03-20T14:27:01.052456+00:00",
+  "command_name": "event",
+  "status": "internal_error",
+  "duration_ms": 52.0,
+  "error_type": "RuntimeError"
+}
+```
+
+Status values and their meaning:
+
+| `status` | Set when |
+|----------|---------|
+| `success` | `on_app_command_completion` fires |
+| `user_error` | Error is an instance of `UserFriendlyError` |
+| `internal_error` | Any other exception |
+
+### Field mapping — payload → database
+
+| Payload field | `telemetry_interactions` | `telemetry_completions` |
+|---------------|--------------------------|-------------------------|
+| `correlation_id` | `correlation_id` | `correlation_id` |
+| `timestamp` | `timestamp` | `timestamp` |
+| `interaction_type` | `interaction_type` | — |
+| `user_id` | `user_id` | — |
+| `command_name` | `command_name` | `command_name` |
+| `guild_id` | `guild_id` | — |
+| `guild_name` | `guild_name` | — |
+| `channel_id` | `channel_id` | — |
+| `options` | `options` | — |
+| `bot_version` | `bot_version` | — |
+| `status` | — | `status` |
+| `duration_ms` | — | `duration_ms` |
+| `error_type` | — | `error_type` |
+| *(set by API)* | `received_at` | `received_at` |
+| *(set by DB)* | `id` | `id` |
+
+### API response
+
+| Scenario | HTTP status | Body |
+|----------|-------------|------|
+| All events written | `202 Accepted` | `{ "written": <n> }` |
+| Partial failure (some events invalid) | `202 Accepted` | `{ "written": <n>, "rejected": <m>, "errors": [...] }` |
+| Malformed JSON or missing `events` key | `400 Bad Request` | `{ "error": "..." }` |
+| Auth failure | `401 Unauthorized` | `{ "error": "..." }` |
+| Server error | `500 Internal Server Error` | `{ "error": "..." }` |
+
+The bot should treat any non-2xx response as a transient failure and log a warning. Telemetry failures must never crash or block the bot.
+
+---
+
+## Key Queries
+
+These are the queries the API gateway runs to power telemetry endpoints.
+
+### Top commands (`GET /v1/telemetry/metrics`)
+
 ```sql
 SELECT
     i.command_name,
     COUNT(i.id)                                                          AS invocations,
-    AVG(c.duration_ms)                                                   AS avg_latency_ms,
-    SUM(CASE WHEN c.status = 'success' THEN 1 ELSE 0 END)::float
-        / NULLIF(COUNT(c.id), 0)                                        AS success_rate
+    ROUND(AVG(c.duration_ms), 1)                                        AS avg_latency_ms,
+    ROUND(
+        SUM(CASE WHEN c.status = 'success' THEN 1 ELSE 0 END)::numeric
+        / NULLIF(COUNT(c.id), 0), 2
+    )                                                                    AS success_rate
 FROM telemetry_interactions i
 LEFT JOIN telemetry_completions c ON i.correlation_id = c.correlation_id
-WHERE i.timestamp BETWEEN :from AND :to
+WHERE i.timestamp > NOW() - INTERVAL '30 days'
   AND i.command_name IS NOT NULL
 GROUP BY i.command_name
 ORDER BY invocations DESC
 LIMIT 10;
 ```
 
-**Unique users over a time window:**
+### Unique users (`totals.unique_users`)
+
 ```sql
 SELECT COUNT(DISTINCT user_id)
 FROM telemetry_interactions
-WHERE timestamp BETWEEN :from AND :to;
+WHERE timestamp > NOW() - INTERVAL '30 days';
 ```
 
-**Error breakdown:**
+### Error breakdown (`top_errors`)
+
 ```sql
 SELECT error_type, COUNT(*) AS count
 FROM telemetry_completions
-WHERE timestamp BETWEEN :from AND :to
+WHERE timestamp > NOW() - INTERVAL '30 days'
   AND error_type IS NOT NULL
 GROUP BY error_type
 ORDER BY count DESC;
 ```
 
+### API ingestion lag
+
+```sql
+SELECT
+    command_name,
+    AVG(EXTRACT(EPOCH FROM (received_at - timestamp)) * 1000) AS avg_lag_ms
+FROM telemetry_interactions
+GROUP BY command_name;
+```
+
 ---
 
-## Verification Plan
+## Phase 3 Work Items
 
-1. **Unit tests:** `uv run task test` — all 46 existing tests + ~22 new tests pass, 0 warnings
-2. **Lint:** `uv run task lint` — no Ruff violations (verify `# noqa: S105` on `telemetry_client_secret`)
-3. **Disabled mode (default):** Start bot with no `TELEMETRY_*` env vars set → confirm no HTTP calls and no errors in logs
-4. **Integration smoke test:** Set `TELEMETRY_ENABLED=true` + real credentials, run bot, trigger `/ping`, check API gateway logs for 202 and confirm PostgreSQL row insertion
-5. **Shutdown flush:** Stop bot while events are buffered, confirm `"Flushing N telemetry events to API"` appears in logs before shutdown completes
+These are known gaps between the current bot code and what Phase 3 requires. All are small, targeted changes to `telemetry.py`.
+
+### 1. Add `bot_version` to the interaction payload
+
+`bot_version` is in the schema and required by the API, but `_extract_interaction_data` does not include it. The bot needs to read its version from config and inject it:
+
+```python
+# In _extract_interaction_data, add:
+"bot_version": self.bot.version,  # or however the bot exposes its version
+```
+
+### 2. Fix `command_name` for non-command interactions
+
+`_get_command_name` currently falls back to `interaction.data.get("custom_id")` for buttons and dropdowns. This puts the `custom_id` in `command_name`, which is wrong — `command_name` is for slash command names only. `custom_id` is already captured in `options` via `_extract_interaction_options`. The fix is to return `None` for non-command interactions:
+
+```python
+def _get_command_name(self, interaction):
+    if interaction.command:
+        return interaction.command.name
+    return None  # custom_id belongs in options, not command_name
+```
+
+### 3. Filter out `autocomplete` interactions
+
+Autocomplete fires on every keystroke while a user types a slash command argument. Storing these adds noise with no analytical value. Filter them before enqueuing:
+
+```python
+# In on_interaction, add early return:
+if interaction.type == discord.InteractionType.autocomplete:
+    return
+```
+
+### 4. Remove `username` from the event dict
+
+`_extract_interaction_data` includes `"username": str(interaction.user)`. Since `username` is not in the schema, the API must currently ignore this field. For cleanliness, remove it from the extraction:
+
+```python
+# Remove this line from _extract_interaction_data:
+"username": str(interaction.user),
+```
+
+### 5. Wire the queue consumer to POST to the API
+
+The current consumer dispatches events to in-memory metrics and logging. In Phase 3, the consumer (or a separate flush task) should batch the queue contents and call `POST /v1/telemetry/batch`. The in-memory metrics path can remain in parallel — they serve different purposes (real-time `/stats` command vs. persistent historical data).
+
+---
+
+## What the Bot Does NOT Do
+
+- Connect to the database directly
+- Run migrations
+- Generate surrogate PKs (`id`) or ingestion timestamps (`received_at`) — both are set server-side
+- Store usernames (`username` is extracted internally but excluded from the schema and will be removed from the payload in Phase 3)

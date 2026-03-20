@@ -103,3 +103,13 @@ datetime.now(ZoneInfo("UTC"))
 - **Commits**: Conventional Commits — `feat(scope): subject`, `fix(scope): subject`
   - Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`
 - **PRs**: Merge into `develop`. Reviewers: Shamik and Jason. All CI checks must pass.
+
+## Related Projects
+
+### Interactions Dashboard (`/Users/jongreen/Downloads/CAPY-RCOS/Interactions-dashboard/`)
+A separate full-stack telemetry dashboard for this bot. FastAPI backend + Vite/React/Tailwind/Recharts frontend.
+- Backend: `uv run task start` (port 8000). `USE_MOCK=true` in `.env` for development without Postgres.
+- Frontend: `npm run dev` from `frontend/` (port 5173, proxies `/api` to backend).
+- Mock data uses a fixed pool of 80 user IDs and seed=42, generating ~1000 interactions over 30 days.
+- Database layer uses `psycopg2` (sync). When `USE_MOCK=false`, real queries in `database.py` are activated.
+- The original scaffold used `asyncpg` (async); replaced with `psycopg2` (sync) per project spec.
