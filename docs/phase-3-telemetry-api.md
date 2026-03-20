@@ -10,6 +10,8 @@ Phase 3 adds a **batched HTTP export layer**: events are buffered in a secondary
 
 ## Architecture Overview
 
+asdfsadf
+
 ```
 Discord Event
       │
