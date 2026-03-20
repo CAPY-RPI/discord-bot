@@ -25,7 +25,7 @@ class BaseView(ui.View):
     def __init__(self, *, timeout: float | None = 180) -> None:
         """Initialize the BaseView."""
         super().__init__(timeout=timeout)
-        self.message: discord.InteractionMessage | None = None
+        self.message: discord.InteractionMessage | discord.Message | None = None
         self.log = logging.getLogger(__name__)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception, item: ui.Item) -> None:
