@@ -2,6 +2,7 @@ import http.client
 import logging
 import urllib.error
 import urllib.parse
+import webbrowser
 
 import discord
 from discord import app_commands
@@ -51,7 +52,8 @@ class AutoLinkCog(commands.Cog):
             if status_code != OK_STATUS:
                 embed = error_embed("Error!", "There was a problem reaching the link.")
             else:
-                embed = success_embed("Project Link", self.url)
+                webbrowser.open(self.url)
+                embed = success_embed("Link", "Link successfully opened.")
         except (http.client.HTTPException, OSError, ValueError, urllib.error.URLError):
             embed = error_embed("Error!", "There was a problem opening the link.")
 
