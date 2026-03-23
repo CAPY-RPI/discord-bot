@@ -1,3 +1,4 @@
+import asyncio
 import secrets
 from unittest.mock import AsyncMock, patch
 
@@ -13,6 +14,7 @@ from capy_discord.database import (
     HTTP_STATUS_CREATED,
     HTTP_STATUS_NOT_FOUND,
     _normalize_api_base_url,
+    _normalize_request_path,
     close_database_pool,
     get_database_pool,
     init_database_pool,
@@ -74,6 +76,16 @@ def test_normalize_api_base_url_behaviors():
         _normalize_api_base_url("   ")
 
 
+def test_normalize_request_path_handles_absolute_urls_and_relative_paths():
+    assert (
+        _normalize_request_path("https://api.example.com/api/v1/bot/events")
+        == "https://api.example.com/api/v1/bot/events"
+    )
+    assert _normalize_request_path("http://localhost:8080/health") == "http://localhost:8080/health"
+    assert _normalize_request_path("/bot/events") == "bot/events"
+    assert _normalize_request_path("bot/events") == "bot/events"
+
+
 @pytest.mark.asyncio
 async def test_client_config_applies_bot_token_and_cookie():
     bot_token_value = secrets.token_urlsafe(12)
@@ -124,6 +136,52 @@ async def test_init_database_pool_recreates_stopped_cached_client():
     assert first is not second
     assert second.is_started is True
     assert second is get_database_pool()
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+async def test_init_database_pool_concurrent_calls_share_single_instance():
+    await close_database_pool()
+
+    first, second = await asyncio.gather(
+        init_database_pool("http://localhost:8080"),
+        init_database_pool("http://localhost:8080"),
+    )
+
+    assert first is second
+    assert first is get_database_pool()
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+async def test_close_and_init_race_does_not_leave_pool_unusable():
+    await close_database_pool()
+
+    for _ in range(20):
+        await asyncio.gather(
+            init_database_pool("http://localhost:8080"),
+            close_database_pool(),
+        )
+
+    client = await init_database_pool("http://localhost:8080")
+    assert client.is_started is True
+    assert get_database_pool().is_started is True
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+async def test_get_database_pool_can_return_stopped_cached_client():
+    await close_database_pool()
+
+    client = await init_database_pool("http://localhost:8080")
+    await client.close()
+
+    cached = get_database_pool()
+    assert cached is client
+    assert cached.is_started is False
 
     await close_database_pool()
 
@@ -252,6 +310,59 @@ async def test_invalid_json_response_raises_backend_api_error(mock_request):
 
 @pytest.mark.asyncio
 @patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_non_json_error_response_uses_status_fallback_message(mock_request):
+    await close_database_pool()
+    mock_request.return_value = _FakeInvalidJsonResponse(502)
+
+    client = await init_database_pool("http://localhost:8080")
+
+    with pytest.raises(BackendAPIError) as exc_info:
+        await client.get_event("evt-1")
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.payload is None
+    assert "status 502" in str(exc_info.value)
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_request_without_response_body_handles_non_json_payload(mock_request):
+    await close_database_pool()
+    mock_request.return_value = _FakeInvalidJsonResponse(HTTP_STATUS_CREATED)
+
+    client = BackendAPIClient("http://localhost:8080")
+    await client.start()
+
+    await client._request_without_response_body("POST", "/bot/events", expected_statuses={HTTP_STATUS_CREATED})
+
+    kwargs = mock_request.call_args.kwargs
+    assert kwargs["method"] == "POST"
+    assert kwargs["url"] == "bot/events"
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_request_without_response_body_raises_on_unexpected_status(mock_request):
+    await close_database_pool()
+    mock_request.return_value = _FakeResponse(HTTP_STATUS_NOT_FOUND, {"message": "missing"})
+
+    client = BackendAPIClient("http://localhost:8080")
+    await client.start()
+
+    with pytest.raises(BackendAPIError) as exc_info:
+        await client._request_without_response_body("GET", "/bot/events", expected_statuses={HTTP_STATUS_CREATED})
+
+    assert exc_info.value.status_code == HTTP_STATUS_NOT_FOUND
+
+    await client.close()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
 async def test_bot_me_endpoint_uses_expected_path(mock_request):
     await close_database_pool()
     mock_request.return_value = _FakeResponse(200, {"token_id": "t-1", "name": "bot-token"})
@@ -324,6 +435,28 @@ async def test_event_crud_and_registration_endpoints(mock_request):
     assert created.get("eid") == "evt-2"
     assert updated.get("location") == "CBIS"
     assert registrations[0].get("uid") == "user-1"
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_partial_success_payloads_do_not_crash_typed_dict_or_list(mock_request):
+    await close_database_pool()
+    mock_request.side_effect = [
+        _FakeResponse(200, {}),
+        _FakeResponse(HTTP_STATUS_CREATED, {"location": "DCC"}),
+        _FakeResponse(200, [{}]),
+    ]
+
+    client = await init_database_pool("http://localhost:8080")
+    bot_info = await client.bot_me()
+    event = await client.create_event({"org_id": "org-1", "location": "DCC"})
+    events = await client.list_events()
+
+    assert bot_info == {}
+    assert event.get("location") == "DCC"
+    assert events == [{}]
 
     await close_database_pool()
 
