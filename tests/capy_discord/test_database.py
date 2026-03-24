@@ -71,6 +71,7 @@ def test_normalize_api_base_url_behaviors():
     assert _normalize_api_base_url("http://localhost:8080") == "http://localhost:8080/v1/"
     assert _normalize_api_base_url("http://localhost:8080/") == "http://localhost:8080/v1/"
     assert _normalize_api_base_url("https://api.example.com/v1") == "https://api.example.com/v1/"
+    assert _normalize_api_base_url("http://localhost:8080/api/v1/bot") == "http://localhost:8080/api/v1/bot/"
 
     with pytest.raises(BackendConfigurationError, match="base_url must be set"):
         _normalize_api_base_url("   ")
@@ -210,7 +211,7 @@ async def test_list_events_makes_expected_request(mock_request):
     assert events[0].get("eid") == "evt-1"
     kwargs = mock_request.call_args.kwargs
     assert kwargs["method"] == "GET"
-    assert kwargs["url"] == "bot/events"
+    assert kwargs["url"] == "events"
     assert kwargs["params"] == {"limit": 10, "offset": 5}
 
     await close_database_pool()
@@ -233,11 +234,11 @@ async def test_register_and_unregister_event_use_expected_status_codes(mock_requ
     unregister_kwargs = mock_request.await_args_list[1].kwargs
 
     assert register_kwargs["method"] == "POST"
-    assert register_kwargs["url"] == "bot/events/evt-1/register"
+    assert register_kwargs["url"] == "events/evt-1/register"
     assert register_kwargs["json"] == {"uid": "user-1", "is_attending": True}
 
     assert unregister_kwargs["method"] == "DELETE"
-    assert unregister_kwargs["url"] == "bot/events/evt-1/register"
+    assert unregister_kwargs["url"] == "events/evt-1/register"
     assert unregister_kwargs["params"] == {"uid": "user-1"}
 
     await close_database_pool()
@@ -272,7 +273,7 @@ async def test_list_events_by_organization_uses_swagger_path(mock_request):
     assert events[0].get("eid") == "evt-2"
     kwargs = mock_request.call_args.kwargs
     assert kwargs["method"] == "GET"
-    assert kwargs["url"] == "bot/events/org/org-1"
+    assert kwargs["url"] == "events/org/org-1"
     assert kwargs["params"] == {"limit": 20, "offset": 0}
 
     await close_database_pool()
@@ -373,7 +374,7 @@ async def test_bot_me_endpoint_uses_expected_path(mock_request):
     assert me.get("token_id") == "t-1"
 
     kwargs = mock_request.call_args.kwargs
-    assert kwargs["url"] == "bot/me"
+    assert kwargs["url"] == "me"
 
     await close_database_pool()
 
