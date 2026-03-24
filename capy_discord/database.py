@@ -284,6 +284,7 @@ class BackendAPIClient:
         payload = await self._request("GET", "/events", params=params)
         return cast("list[EventResponse]", _typed_list(payload))
 
+    # ROUTE DOES NOT EXIST
     async def list_events_by_organization(
         self,
         organization_id: str,
@@ -369,6 +370,7 @@ class BackendAPIClient:
         """Call `DELETE /organizations/{oid}`."""
         await self._request("DELETE", f"/organizations/{organization_id}", expected_statuses={HTTP_STATUS_NO_CONTENT})
 
+    # ROUTE DOES NOT EXIST
     async def list_organization_events(
         self,
         organization_id: str,
@@ -408,11 +410,13 @@ class BackendAPIClient:
         payload = await self._request("GET", f"/users/{user_id}")
         return cast("UserResponse", _typed_dict(payload))
 
+    # ROUTE DOES NOT EXIST
     async def update_user(self, user_id: str, data: UpdateUserRequest) -> UserResponse:
         """Call `PUT /users/{uid}`."""
         payload = await self._request("PUT", f"/users/{user_id}", json_body=data)
         return cast("UserResponse", _typed_dict(payload))
 
+    # ROUTE DOES NOT EXIST
     async def delete_user(self, user_id: str) -> None:
         """Call `DELETE /users/{uid}`."""
         await self._request("DELETE", f"/users/{user_id}", expected_statuses={HTTP_STATUS_NO_CONTENT})
