@@ -1,9 +1,4 @@
-from datetime import date, datetime, time
-
-from pydantic import BaseModel, Field, field_validator
-
-
-class EventSchema(BaseModel):   
+class EventSchema(BaseModel):
     """Pydantic model defining the Event schema and validation rules."""
 
     event_name: str = Field(title="Event Name", description="Name of the event", max_length=100)
@@ -44,3 +39,10 @@ class EventSchema(BaseModel):
                 parsed = datetime.strptime(f"{value} +0000", "%H:%M %z")
             return parsed.timetz().replace(tzinfo=None)
         return value
+
+
+from pydantic import BaseModel, Field, field_validator
+
+class faqSchema(BaseModel):
+    question: str = Field(title="Question", description="The FAQ question", max_length=200)
+    answer: str = Field(title="Answer", description="The FAQ answer", max_length=1000)
