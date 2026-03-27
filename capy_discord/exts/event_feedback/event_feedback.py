@@ -391,6 +391,8 @@ class EventFeedback(commands.Cog):
                     f"Hey {member.display_name}!\n\n"
                     f"Thanks for coming to **{event_name}**!\n"
                     f"We'd love to hear your feedback.\n"
+                    "\n"
+                    "**All feedback is anonymous.**\n"
                     "Please choose the option that best matches your experience:\n"
                 )
                 msg = await member.send(content=content, view=view)
@@ -434,9 +436,7 @@ class EventFeedback(commands.Cog):
 
     def _build_event_feedback_details(
         self,
-        guild: discord.Guild,
         event_feedback: dict[int, EventFeedbackSchema],
-        name_snapshot: dict[int, str],
     ) -> tuple[list[str], int, int, int, int]:
         """Build per-response detail lines and aggregate counters."""
         lines: list[str] = []
@@ -445,9 +445,8 @@ class EventFeedback(commands.Cog):
         amazing_count = 0
         written_feedback_count = 0
 
-        for user_id, feedback in event_feedback.items():
-            member = guild.get_member(user_id)
-            user_name = member.display_name if member is not None else name_snapshot.get(user_id, f"User {user_id}")
+        for person_counter, feedback in enumerate(event_feedback.values(), start=1):
+            display_name = f"Response {person_counter}"
             suggestion = feedback.improvement_suggestion or "(No written feedback)"
             rating_label = self._rating_to_label(feedback.rating)
 
@@ -461,7 +460,7 @@ class EventFeedback(commands.Cog):
             if feedback.improvement_suggestion:
                 written_feedback_count += 1
 
-            lines.append(f"• **{user_name}**\n  Rating: **{rating_label}**\n  Feedback: {suggestion}")
+            lines.append(f"• **{display_name}**\n  Rating: **{rating_label}**\n  Feedback: {suggestion}")
 
         return lines, poor_count, average_count, amazing_count, written_feedback_count
 
@@ -538,11 +537,8 @@ class EventFeedback(commands.Cog):
             return
 
         event_feedback = guild_feedback[event_name]
-        name_snapshot = self.feedback_user_display_names.get(guild.id, {})
         lines, poor_count, average_count, amazing_count, written_feedback_count = self._build_event_feedback_details(
-            guild,
             event_feedback,
-            name_snapshot,
         )
 
         total_responses = len(event_feedback)
@@ -618,15 +614,17 @@ class EventFeedback(commands.Cog):
         self.feedback_data[guild_id][event_name][user_id] = EventFeedbackSchema(
             rating=rating,
             improvement_suggestion=suggestion,
+            anonymous=True,
         )
 
         self.log.info(
-            "Feedback saved - guild=%s event='%s' user=%s rating=%s suggestion_provided=%s",
+            "Feedback saved - guild=%s event='%s' user=%s rating=%s suggestion_provided=%s anonymous=%s",
             guild_id,
             event_name,
             user_id,
             rating,
             suggestion is not None,
+            True,
         )
 
         feedback_status = "Provided" if suggestion else "Skipped"
@@ -634,7 +632,8 @@ class EventFeedback(commands.Cog):
             "Response recorded. Thank you for your feedback.\n"
             f"Event: **{event_name}**\n"
             f"Rating: **{self._rating_bucket_text(rating)}**\n"
-            f"Written feedback: **{feedback_status}**"
+            f"Written feedback: **{feedback_status}**\n"
+            "Privacy: **Anonymous**"
         )
 
         if not interaction.response.is_done():

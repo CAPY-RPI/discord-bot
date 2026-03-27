@@ -11,3 +11,8 @@ class EventFeedbackSchema(BaseModel):
         max_length=1000,
         default=None,
     )
+    anonymous: bool = Field(
+        title="Anonymous",
+        description="Whether this feedback should be shown anonymously in admin views.",
+        default=False,
+    )
