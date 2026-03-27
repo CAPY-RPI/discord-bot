@@ -15,6 +15,56 @@ from capy_discord.utils import EXTENSIONS
 class Bot(commands.AutoShardedBot):
     """Bot class for Capy Discord."""
 
+    def _format_missing_permissions(self, permissions: list[str]) -> str:
+        """Convert Discord permission names into readable labels."""
+        return ", ".join(permission.replace("_", " ").title() for permission in permissions)
+
+    def _get_app_command_error_message(self, error: app_commands.AppCommandError) -> str | None:
+        """Return a user-facing error message for expected slash-command failures."""
+        actual_error = error.original if isinstance(error, app_commands.CommandInvokeError) else error
+
+        if isinstance(actual_error, UserFriendlyError):
+            return actual_error.user_message
+
+        if isinstance(actual_error, app_commands.MissingPermissions):
+            permissions = self._format_missing_permissions(actual_error.missing_permissions)
+            return f"You need the following permission(s) to run this command: {permissions}."
+
+        if isinstance(actual_error, app_commands.BotMissingPermissions):
+            permissions = self._format_missing_permissions(actual_error.missing_permissions)
+            return f"I need the following permission(s) to run this command: {permissions}."
+
+        if isinstance(actual_error, app_commands.NoPrivateMessage):
+            return "This command can only be used in a server."
+
+        if isinstance(actual_error, app_commands.CheckFailure):
+            return "You can't use this command."
+
+        return None
+
+    def _get_prefix_error_message(self, error: commands.CommandError) -> str | None:
+        """Return a user-facing error message for expected prefix-command failures."""
+        actual_error = error.original if isinstance(error, commands.CommandInvokeError) else error
+
+        if isinstance(actual_error, UserFriendlyError):
+            return actual_error.user_message
+
+        if isinstance(actual_error, commands.MissingPermissions):
+            permissions = self._format_missing_permissions(actual_error.missing_permissions)
+            return f"You need the following permission(s) to run this command: {permissions}."
+
+        if isinstance(actual_error, commands.BotMissingPermissions):
+            permissions = self._format_missing_permissions(actual_error.missing_permissions)
+            return f"I need the following permission(s) to run this command: {permissions}."
+
+        if isinstance(actual_error, commands.NoPrivateMessage):
+            return "This command can only be used in a server."
+
+        if isinstance(actual_error, commands.CheckFailure):
+            return "You can't use this command."
+
+        return None
+
     async def setup_hook(self) -> None:
         """Run before the bot starts."""
         self.log = logging.getLogger(__name__)
@@ -46,18 +96,14 @@ class Bot(commands.AutoShardedBot):
 
     async def on_tree_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         """Handle errors in slash commands."""
-        # Unpack CommandInvokeError to get the original exception
-        actual_error = error
-        if isinstance(error, app_commands.CommandInvokeError):
-            actual_error = error.original
-
         # Track all failures in telemetry (both user-friendly and unexpected)
         telemetry = self.get_cog("Telemetry")
         if isinstance(telemetry, Telemetry):
             telemetry.log_command_failure(interaction, error)
 
-        if isinstance(actual_error, UserFriendlyError):
-            embed = error_embed(description=actual_error.user_message)
+        message = self._get_app_command_error_message(error)
+        if message is not None:
+            embed = error_embed(description=message)
             if interaction.response.is_done():
                 await interaction.followup.send(embed=embed, ephemeral=True)
             else:
@@ -75,12 +121,9 @@ class Bot(commands.AutoShardedBot):
 
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError) -> None:
         """Handle errors in prefix commands."""
-        actual_error = error
-        if isinstance(error, commands.CommandInvokeError):
-            actual_error = error.original
-
-        if isinstance(actual_error, UserFriendlyError):
-            embed = error_embed(description=actual_error.user_message)
+        message = self._get_prefix_error_message(error)
+        if message is not None:
+            embed = error_embed(description=message)
             await ctx.send(embed=embed)
             return
 

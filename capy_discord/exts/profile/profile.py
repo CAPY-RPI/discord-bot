@@ -1,16 +1,20 @@
 import logging
+from collections.abc import Callable
 from datetime import datetime
+from functools import partial
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands, ui
 from discord.ext import commands
+from pydantic import ValidationError
 
 from capy_discord.ui.embeds import error_embed, info_embed, success_embed
 from capy_discord.ui.forms import ModelModal
 from capy_discord.ui.views import BaseView
 
-from ._schemas import UserProfileSchema
+from ._schemas import UserProfileDetailsSchema, UserProfileIdentitySchema, UserProfileSchema
 
 
 class ConfirmDeleteView(BaseView):
@@ -38,6 +42,28 @@ class ConfirmDeleteView(BaseView):
         self.stop()
 
 
+class ProfileModalLauncherView(BaseView):
+    """Launch the multi-step profile editor from a button."""
+
+    def __init__(
+        self,
+        callback: Callable[[discord.Interaction], Any],
+        *,
+        button_label: str = "Open Profile Form",
+        button_emoji: str | None = None,
+        button_style: discord.ButtonStyle = discord.ButtonStyle.primary,
+    ) -> None:
+        """Initialize the launcher view."""
+        super().__init__(timeout=300)
+        self._callback = callback
+        self.add_item(ui.Button(label=button_label, emoji=button_emoji, style=button_style))
+        self.children[0].callback = self._button_callback  # type: ignore[method-assign]
+
+    async def _button_callback(self, interaction: discord.Interaction) -> None:
+        """Open the first profile modal."""
+        await self._callback(interaction)
+
+
 class Profile(commands.Cog):
     """Manage user profiles using a single command with choices."""
 
@@ -45,8 +71,12 @@ class Profile(commands.Cog):
         """Initialize the Profile cog."""
         self.bot = bot
         self.log = logging.getLogger(__name__)
-        # In-memory storage for demonstration.
-        self.profiles: dict[int, UserProfileSchema] = {}
+        # In-memory storage for demonstration, attached to the bot so other cogs can read it.
+        store: dict[int, UserProfileSchema] | None = getattr(bot, "profile_store", None)
+        if store is None:
+            store = {}
+            setattr(bot, "profile_store", store)  # noqa: B010
+        self.profiles = store
 
     @app_commands.command(name="profile", description="Manage your profile")
     @app_commands.describe(action="The action to perform with your profile")
@@ -92,14 +122,76 @@ class Profile(commands.Cog):
         initial_data = current_profile.model_dump() if current_profile else None
 
         self.log.info("Opening profile modal for user %s (%s)", interaction.user, action)
+        await self._open_profile_identity_modal(interaction, action, initial_data)
 
+    async def _open_profile_identity_modal(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+        initial_data: dict[str, Any] | None,
+    ) -> None:
+        """Open the first step of the profile editor."""
         modal = ModelModal(
-            model_cls=UserProfileSchema,
-            callback=self._handle_profile_submit,
-            title=f"{action.title()} Your Profile",
+            model_cls=UserProfileIdentitySchema,
+            callback=partial(self._handle_profile_identity_submit, action=action),
+            title=f"{action.title()} Your Profile (1/2)",
             initial_data=initial_data,
         )
         await interaction.response.send_modal(modal)
+
+    async def _handle_profile_identity_submit(
+        self, interaction: discord.Interaction, identity: UserProfileIdentitySchema, action: str
+    ) -> None:
+        """Persist step-one data and offer a button to continue to step two."""
+        current_profile = self.profiles.get(interaction.user.id)
+        profile_data = current_profile.model_dump() if current_profile else {}
+        profile_data.update(identity.model_dump())
+
+        view = ProfileModalLauncherView(
+            callback=partial(self._open_profile_details_modal, action=action, profile_data=profile_data),
+            button_label="Finish Profile",
+            button_emoji="➡️",
+            button_style=discord.ButtonStyle.success,
+        )
+        await interaction.response.send_message(
+            content="Step 1 of 2 complete. Click below to finish your profile.",
+            ephemeral=True,
+            view=view,
+        )
+
+    async def _open_profile_details_modal(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+        profile_data: dict[str, Any],
+    ) -> None:
+        """Open the second step of the profile editor."""
+        modal = ModelModal(
+            model_cls=UserProfileDetailsSchema,
+            callback=partial(self._handle_profile_details_submit, profile_data=profile_data),
+            title=f"{action.title()} Your Profile (2/2)",
+            initial_data=profile_data,
+        )
+        await interaction.response.send_modal(modal)
+
+    async def _handle_profile_details_submit(
+        self,
+        interaction: discord.Interaction,
+        details: UserProfileDetailsSchema,
+        profile_data: dict[str, Any],
+    ) -> None:
+        """Combine both modal steps into a validated profile."""
+        combined_data = {**profile_data, **details.model_dump()}
+
+        try:
+            profile = UserProfileSchema(**combined_data)
+        except ValidationError as error:
+            self.log.warning("Full profile validation failed for user %s: %s", interaction.user, error)
+            embed = error_embed("Profile Validation Failed", "Please restart the profile flow and try again.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+
+        await self._handle_profile_submit(interaction, profile)
 
     async def handle_show_action(self, interaction: discord.Interaction) -> None:
         """Logic for the 'show' choice."""
@@ -161,6 +253,8 @@ class Profile(commands.Cog):
         embed.add_field(name="Major", value=profile.major, inline=True)
         embed.add_field(name="Grad Year", value=str(profile.graduation_year), inline=True)
         embed.add_field(name="Email", value=profile.school_email, inline=True)
+        embed.add_field(name="Minor", value=profile.minor or "N/A", inline=True)
+        embed.add_field(name="Description", value=profile.description or "N/A", inline=False)
 
         # Only show last 4 of ID for privacy in the embed
         now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
