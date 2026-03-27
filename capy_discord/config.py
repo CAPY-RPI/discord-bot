@@ -22,6 +22,9 @@ class Settings(EnvConfig):
     token: str = ""
     debug_guild_id: int | None = None
 
+    # Database Configuration
+    database_url: str = "postgres://postgres:password@localhost:5432/discord_bot"
+
     # Ticket System Configuration
     ticket_feedback_channel_id: int = 0
 

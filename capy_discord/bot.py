@@ -3,7 +3,9 @@ import logging
 import discord
 from discord import app_commands
 from discord.ext import commands
+from tortoise import Tortoise
 
+from capy_discord.config import settings
 from capy_discord.errors import UserFriendlyError
 from capy_discord.exts.core.telemetry import Telemetry
 from capy_discord.ui.embeds import error_embed
@@ -16,8 +18,23 @@ class Bot(commands.AutoShardedBot):
     async def setup_hook(self) -> None:
         """Run before the bot starts."""
         self.log = logging.getLogger(__name__)
+
+        # Initialize Database
+        await Tortoise.init(
+            db_url=settings.database_url,
+            modules={"models": ["capy_discord.exts.FAQ._models"]},
+        )
+        await Tortoise.generate_schemas()
+        self.log.info("Database initialized.")
+
         self.tree.on_error = self.on_tree_error  # type: ignore
         await self.load_extensions()
+
+    async def close(self) -> None:
+        """Close the bot and database connection."""
+        await Tortoise.close_connections()
+        self.log.info("Database connection closed.")
+        await super().close()
 
     def _get_logger_for_command(
         self, command: app_commands.Command | app_commands.ContextMenu | commands.Command | None
