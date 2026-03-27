@@ -44,7 +44,11 @@ class ImprovementModal(BaseModal):
     )
 
     def __init__(
-        self, cog: "EventFeedback", rating: int, dm_message: discord.Message | None, view: "RatingView | None" = None
+        self,
+        cog: "EventFeedback",
+        rating: int,
+        dm_message: discord.Message | None,
+        prompt_view: "ImprovementPromptView | None" = None,
     ) -> None:
         """Initialize the ImprovementModal.
 
@@ -52,23 +56,22 @@ class ImprovementModal(BaseModal):
             cog: The parent EventFeedback cog that owns the feedback store.
             rating: The numeric rating already submitted by the user.
             dm_message: The original DM message so the bot can update its buttons.
-            view: The rating view to disable after submission.
+            prompt_view: The improvement prompt view to disable after submission.
         """
         super().__init__(title="Event Feedback - Tell Us More")
         self.cog = cog
         self.rating = rating
         self.dm_message = dm_message
-        self.view = view
+        self.prompt_view = prompt_view
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         """Persist feedback and acknowledge the user."""
         suggestion_value = self.suggestion.value.strip() or None
         await self.cog.save_feedback(interaction, self.rating, suggestion_value)
 
-        # Mark view as responded and disable buttons on the original DM message.
-        if self.view is not None:
-            self.view.responded = True
-            self.view.disable_all_items()
+        if self.prompt_view is not None:
+            self.prompt_view.responded = True
+            self.prompt_view.disable_all_items()
 
         if self.dm_message is not None:
             # Direct message edit - does not consume the modal's interaction response.
@@ -113,9 +116,9 @@ class RatingRangeButton(ui.Button["RatingView"]):
             await interaction.response.edit_message(view=view)
             await self.cog.save_feedback(interaction, average_rating, None)
         else:
-            # For negative ratings, defer disabling buttons until the modal is submitted.
-            modal = ImprovementModal(cog=self.cog, rating=average_rating, dm_message=view.dm_message, view=view)
-            await interaction.response.send_modal(modal)
+            # For negative ratings, offer optional written feedback with a Skip option.
+            prompt_view = ImprovementPromptView(cog=self.cog, rating=average_rating, dm_message=view.dm_message)
+            await interaction.response.edit_message(view=prompt_view)
 
     @property
     def cog(self) -> "EventFeedback":
@@ -134,10 +137,75 @@ class RatingView(BaseView):
         self.responded = False
         self.dm_message: discord.Message | None = None
 
-        # Add three buttons for rating ranges.
-        self.add_item(RatingRangeButton("1-3", discord.ButtonStyle.danger, (1, 3)))
-        self.add_item(RatingRangeButton("4-6", discord.ButtonStyle.primary, (4, 6)))
-        self.add_item(RatingRangeButton("7-10", discord.ButtonStyle.success, (7, 10)))
+        # Add three text buttons mapped to rating ranges.
+        self.add_item(RatingRangeButton("Poor", discord.ButtonStyle.danger, (1, 3)))
+        self.add_item(RatingRangeButton("Average", discord.ButtonStyle.primary, (4, 6)))
+        self.add_item(RatingRangeButton("Amazing", discord.ButtonStyle.success, (7, 10)))
+
+
+class WriteImprovementButton(ui.Button["ImprovementPromptView"]):
+    """Button that opens the written-feedback modal."""
+
+    def __init__(self) -> None:
+        """Initialize the write-feedback button."""
+        super().__init__(label="Write Feedback", style=discord.ButtonStyle.primary)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        """Open the improvement modal."""
+        view = self.view
+        if view is None:
+            await interaction.response.send_message("Unable to process your response.", ephemeral=True)
+            return
+
+        if view.responded:
+            await interaction.response.send_message("You've already submitted your rating - thanks!", ephemeral=True)
+            return
+
+        modal = ImprovementModal(
+            cog=view.cog,
+            rating=view.rating,
+            dm_message=view.dm_message,
+            prompt_view=view,
+        )
+        await interaction.response.send_modal(modal)
+
+
+class SkipImprovementButton(ui.Button["ImprovementPromptView"]):
+    """Button that skips written feedback and records rating only."""
+
+    def __init__(self) -> None:
+        """Initialize the skip-feedback button."""
+        super().__init__(label="Skip", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        """Record rating without written feedback."""
+        view = self.view
+        if view is None:
+            await interaction.response.send_message("Unable to process your response.", ephemeral=True)
+            return
+
+        if view.responded:
+            await interaction.response.send_message("You've already submitted your rating - thanks!", ephemeral=True)
+            return
+
+        view.responded = True
+        view.disable_all_items()
+        await interaction.response.edit_message(view=None)
+        await view.cog.save_feedback(interaction, view.rating, None)
+
+
+class ImprovementPromptView(BaseView):
+    """View shown after low ratings with Write Feedback and Skip options."""
+
+    def __init__(self, cog: "EventFeedback", rating: int, dm_message: discord.Message | None) -> None:
+        """Initialize the improvement prompt view."""
+        super().__init__(timeout=600)
+        self.cog = cog
+        self.rating = rating
+        self.dm_message = dm_message
+        self.responded = False
+        self.add_item(WriteImprovementButton())
+        self.add_item(SkipImprovementButton())
 
 
 # ---------------------------------------------------------------------------
@@ -328,8 +396,9 @@ class EventFeedback(commands.Cog):
                 view = RatingView(cog=self)
                 content = (
                     f"Hey {member.display_name}!\n\n"
-                    f"We'd love your feedback on **{event_name}**.\n"
-                    "Please rate it on a scale of **1-10** by clicking a button below:\n"
+                    f"Thanks for coming to **{event_name}**!\n"
+                    f"We'd love to hear your feedback.\n"
+                    "Please choose the option that best matches your experience:\n"
                 )
                 msg = await member.send(content=content, view=view)
                 # Store the message reference so the view can update it later.
@@ -361,10 +430,14 @@ class EventFeedback(commands.Cog):
     def _rating_to_label(self, rating: int) -> str:
         """Convert numeric rating to a text label."""
         if rating <= _BAD_THRESHOLD:
-            return "Bad"
+            return "Poor"
         if rating <= _POSITIVE_THRESHOLD:
             return "Average"
-        return "Good"
+        return "Amazing"
+
+    def _rating_bucket_text(self, rating: int) -> str:
+        """Return a human-friendly rating label without numeric ranges."""
+        return self._rating_to_label(rating)
 
     @app_commands.command(
         name="view_feedback",
@@ -493,7 +566,13 @@ class EventFeedback(commands.Cog):
             suggestion is not None,
         )
 
-        message = "Response recorded. Thank you for your feedback."
+        feedback_status = "Provided" if suggestion else "Skipped"
+        message = (
+            "Response recorded. Thank you for your feedback.\n"
+            f"Event: **{event_name}**\n"
+            f"Rating: **{self._rating_bucket_text(rating)}**\n"
+            f"Written feedback: **{feedback_status}**"
+        )
 
         if not interaction.response.is_done():
             await interaction.response.send_message(message)
