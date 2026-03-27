@@ -1,7 +1,7 @@
 """Event feedback extension.
 
 Sends a DM rating survey (1-10) to every guild member after an event.
-Members who rate below 6 are prompted for improvement suggestions.
+After selecting a rating, members can optionally submit written feedback or skip.
 All responses are stored in-memory (see [DB CALL] comments for future persistence).
 """
 
@@ -109,16 +109,9 @@ class RatingRangeButton(ui.Button["RatingView"]):
         # Use the average of the range as the representative rating.
         average_rating = sum(self.rating_range) // 2
 
-        if average_rating >= _POSITIVE_THRESHOLD:
-            # Mark as responded and disable buttons immediately for positive ratings.
-            view.responded = True
-            view.disable_all_items()
-            await interaction.response.edit_message(view=view)
-            await self.cog.save_feedback(interaction, average_rating, None)
-        else:
-            # For negative ratings, offer optional written feedback with a Skip option.
-            prompt_view = ImprovementPromptView(cog=self.cog, rating=average_rating, dm_message=view.dm_message)
-            await interaction.response.edit_message(view=prompt_view)
+        # For all ratings, offer optional written feedback with a Skip option.
+        prompt_view = ImprovementPromptView(cog=self.cog, rating=average_rating, dm_message=view.dm_message)
+        await interaction.response.edit_message(view=prompt_view)
 
     @property
     def cog(self) -> "EventFeedback":
@@ -439,6 +432,65 @@ class EventFeedback(commands.Cog):
         """Return a human-friendly rating label without numeric ranges."""
         return self._rating_to_label(rating)
 
+    def _build_event_feedback_details(
+        self,
+        guild: discord.Guild,
+        event_feedback: dict[int, EventFeedbackSchema],
+        name_snapshot: dict[int, str],
+    ) -> tuple[list[str], int, int, int, int]:
+        """Build per-response detail lines and aggregate counters."""
+        lines: list[str] = []
+        poor_count = 0
+        average_count = 0
+        amazing_count = 0
+        written_feedback_count = 0
+
+        for user_id, feedback in event_feedback.items():
+            member = guild.get_member(user_id)
+            user_name = member.display_name if member is not None else name_snapshot.get(user_id, f"User {user_id}")
+            suggestion = feedback.improvement_suggestion or "(No written feedback)"
+            rating_label = self._rating_to_label(feedback.rating)
+
+            if rating_label == "Poor":
+                poor_count += 1
+            elif rating_label == "Average":
+                average_count += 1
+            else:
+                amazing_count += 1
+
+            if feedback.improvement_suggestion:
+                written_feedback_count += 1
+
+            lines.append(f"• **{user_name}**\n  Rating: **{rating_label}**\n  Feedback: {suggestion}")
+
+        return lines, poor_count, average_count, amazing_count, written_feedback_count
+
+    def _build_summary_block(
+        self,
+        event_name: str,
+        total_responses: int,
+        counts: dict[str, int],
+    ) -> str:
+        """Build the aggregated feedback summary text for admins."""
+        poor_count = counts["poor"]
+        average_count = counts["average"]
+        amazing_count = counts["amazing"]
+        written_feedback_count = counts["written"]
+
+        poor_pct = (poor_count / total_responses) * 100 if total_responses else 0
+        average_pct = (average_count / total_responses) * 100 if total_responses else 0
+        amazing_pct = (amazing_count / total_responses) * 100 if total_responses else 0
+        written_pct = (written_feedback_count / total_responses) * 100 if total_responses else 0
+
+        return (
+            f"**Feedback summary for {event_name}**\n"
+            f"Total responses: **{total_responses}**\n"
+            f"Poor: **{poor_count}** ({poor_pct:.0f}%)\n"
+            f"Average: **{average_count}** ({average_pct:.0f}%)\n"
+            f"Amazing: **{amazing_count}** ({amazing_pct:.0f}%)\n"
+            f"Written feedback provided: **{written_feedback_count}** ({written_pct:.0f}%)"
+        )
+
     @app_commands.command(
         name="view_feedback",
         description="View submitted event feedback for a specific event",
@@ -487,22 +539,33 @@ class EventFeedback(commands.Cog):
 
         event_feedback = guild_feedback[event_name]
         name_snapshot = self.feedback_user_display_names.get(guild.id, {})
-        lines: list[str] = []
-        for user_id, feedback in event_feedback.items():
-            member = guild.get_member(user_id)
-            user_name = member.display_name if member is not None else name_snapshot.get(user_id, f"User {user_id}")
-            suggestion = feedback.improvement_suggestion or "(No written feedback)"
-            rating_label = self._rating_to_label(feedback.rating)
-            lines.append(f"• **{user_name}**\n  Rating: **{rating_label}**\n  Feedback: {suggestion}")
+        lines, poor_count, average_count, amazing_count, written_feedback_count = self._build_event_feedback_details(
+            guild,
+            event_feedback,
+            name_snapshot,
+        )
+
+        total_responses = len(event_feedback)
+        summary_block = self._build_summary_block(
+            event_name,
+            total_responses,
+            {
+                "poor": poor_count,
+                "average": average_count,
+                "amazing": amazing_count,
+                "written": written_feedback_count,
+            },
+        )
 
         block_body = "\n\n".join(lines) if lines else "(No responses yet)"
-        full_text = f"**Feedback for {event_name}**\n\n{block_body}"
+        details_block = f"**Detailed responses for {event_name}**\n\n{block_body}"
+        full_text = f"{summary_block}\n\n---\n\n{details_block}"
 
         if len(full_text) <= _MAX_REPORT_CHARS:
             await interaction.response.send_message(full_text, ephemeral=True)
             return
 
-        await interaction.response.send_message(f"Feedback for {event_name} (part 1):", ephemeral=True)
+        await interaction.response.send_message(summary_block, ephemeral=True)
         current_chunk = ""
         part = 1
         for line in lines:
