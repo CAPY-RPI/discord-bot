@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from json import JSONDecodeError
 from typing import Any, NotRequired, Required, TypedDict, cast
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -274,15 +275,16 @@ class BackendAPIClient:
 
     async def bot_me(self) -> BotTokenResponse:
         """Call `GET /bot/me`."""
-        payload = await self._request("GET", "/bot/me")
+        payload = await self._request("GET", "/me")
         return cast("BotTokenResponse", _typed_dict(payload))
 
     async def list_events(self, *, limit: int | None = None, offset: int | None = None) -> list[EventResponse]:
         """Call `GET /events`."""
         params = _pagination_params(limit=limit, offset=offset)
-        payload = await self._request("GET", "/bot/events", params=params)
+        payload = await self._request("GET", "/events", params=params)
         return cast("list[EventResponse]", _typed_list(payload))
 
+    # ROUTE DOES NOT EXIST
     async def list_events_by_organization(
         self,
         organization_id: str,
@@ -292,33 +294,33 @@ class BackendAPIClient:
     ) -> list[EventResponse]:
         """Call `GET /events/org/{oid}`."""
         params = _pagination_params(limit=limit, offset=offset)
-        payload = await self._request("GET", f"/bot/events/org/{organization_id}", params=params)
+        payload = await self._request("GET", f"/events/org/{organization_id}", params=params)
         return cast("list[EventResponse]", _typed_list(payload))
 
     async def get_event(self, event_id: str) -> EventResponse:
         """Call `GET /events/{eid}`."""
-        payload = await self._request("GET", f"/bot/events/{event_id}")
+        payload = await self._request("GET", f"/events/{event_id}")
         return cast("EventResponse", _typed_dict(payload))
 
     async def create_event(self, data: CreateEventRequest) -> EventResponse:
         """Call `POST /events`."""
-        payload = await self._request("POST", "/bot/events", json_body=data, expected_statuses={HTTP_STATUS_CREATED})
+        payload = await self._request("POST", "/events", json_body=data, expected_statuses={HTTP_STATUS_CREATED})
         return cast("EventResponse", _typed_dict(payload))
 
     async def update_event(self, event_id: str, data: UpdateEventRequest) -> EventResponse:
         """Call `PUT /events/{eid}`."""
-        payload = await self._request("PUT", f"/bot/events/{event_id}", json_body=data)
+        payload = await self._request("PUT", f"/events/{event_id}", json_body=data)
         return cast("EventResponse", _typed_dict(payload))
 
     async def delete_event(self, event_id: str) -> None:
         """Call `DELETE /events/{eid}`."""
-        await self._request("DELETE", f"/bot/events/{event_id}", expected_statuses={HTTP_STATUS_NO_CONTENT})
+        await self._request("DELETE", f"/events/{event_id}", expected_statuses={HTTP_STATUS_NO_CONTENT})
 
     async def register_event(self, event_id: str, data: RegisterEventRequest) -> None:
         """Call `POST /events/{eid}/register`."""
         await self._request(
             "POST",
-            f"/bot/events/{event_id}/register",
+            f"/events/{event_id}/register",
             json_body=data,
             expected_statuses={HTTP_STATUS_CREATED},
         )
@@ -328,14 +330,14 @@ class BackendAPIClient:
         params = _optional_params(uid=uid)
         await self._request(
             "DELETE",
-            f"/bot/events/{event_id}/register",
+            f"/events/{event_id}/register",
             params=params,
             expected_statuses={HTTP_STATUS_NO_CONTENT},
         )
 
     async def list_event_registrations(self, event_id: str) -> list[EventRegistrationResponse]:
         """Call `GET /events/{eid}/registrations`."""
-        payload = await self._request("GET", f"/bot/events/{event_id}/registrations")
+        payload = await self._request("GET", f"/events/{event_id}/registrations")
         return cast("list[EventRegistrationResponse]", _typed_list(payload))
 
     async def list_organizations(
@@ -368,6 +370,7 @@ class BackendAPIClient:
         """Call `DELETE /organizations/{oid}`."""
         await self._request("DELETE", f"/organizations/{organization_id}", expected_statuses={HTTP_STATUS_NO_CONTENT})
 
+    # ROUTE DOES NOT EXIST
     async def list_organization_events(
         self,
         organization_id: str,
@@ -407,11 +410,13 @@ class BackendAPIClient:
         payload = await self._request("GET", f"/users/{user_id}")
         return cast("UserResponse", _typed_dict(payload))
 
+    # ROUTE DOES NOT EXIST
     async def update_user(self, user_id: str, data: UpdateUserRequest) -> UserResponse:
         """Call `PUT /users/{uid}`."""
         payload = await self._request("PUT", f"/users/{user_id}", json_body=data)
         return cast("UserResponse", _typed_dict(payload))
 
+    # ROUTE DOES NOT EXIST
     async def delete_user(self, user_id: str) -> None:
         """Call `DELETE /users/{uid}`."""
         await self._request("DELETE", f"/users/{user_id}", expected_statuses={HTTP_STATUS_NO_CONTENT})
@@ -556,8 +561,10 @@ def _normalize_api_base_url(base_url: str) -> str:
         msg = "base_url must be set"
         raise BackendConfigurationError(msg)
 
-    if cleaned.endswith("/v1"):
-        return f"{cleaned}/"
+    parsed = urlsplit(cleaned)
+    path_segments = [segment for segment in parsed.path.split("/") if segment]
+    if "v1" in path_segments:
+        return urlunsplit((parsed.scheme, parsed.netloc, f"{parsed.path}/", parsed.query, parsed.fragment))
 
     return f"{cleaned}/v1/"
 

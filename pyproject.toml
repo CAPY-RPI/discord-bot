@@ -116,3 +116,8 @@ convention = "google"
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires a locally running backend API and explicit opt-in",
+]
