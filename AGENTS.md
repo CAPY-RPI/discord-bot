@@ -95,12 +95,74 @@ async def resource(self, interaction, action: str):
 ### Group Cogs
 For complex features with multiple distinct sub-functions, use `commands.GroupCog`.
 
-## 4. Error Handling
+## 4. Internal DM Service
+
+Direct messaging is an internal service, **not** a user-facing cog. Do not add `/dm`-style command surfaces for bulk messaging.
+
+### Location
+Use:
+
+*   `capy_discord.services.dm`
+*   `capy_discord.services.policies`
+
+### Safety Model
+*   DM sends are **deny-all by default** via `policies.DENY_ALL`.
+*   Developers must opt into explicit allowlists with helpers like `policies.allow_users(...)`, `policies.allow_roles(...)`, or `policies.allow_targets(...)`.
+*   The service rejects `@everyone`, rejects targets outside the allowed policy, and enforces `max_recipients`.
+
+### Usage Pattern
+Developers should think in terms of:
+
+1.  The exact user or role to DM.
+2.  The predefined policy that permits that target.
+
+Prefer explicit entrypoints over generic audience bags:
+
+```python
+from capy_discord.services import dm, policies
+
+EVENT_POLICY = policies.allow_roles(EVENT_ROLE_ID, max_recipients=20)
+
+draft = await dm.compose_to_role(
+    guild,
+    EVENT_ROLE_ID,
+    "Reminder: event starts at 7 PM.",
+    policy=EVENT_POLICY,
+)
+result = await dm.send(guild, draft)
+```
+
+For self-test or single-user flows, use `dm.compose_to_user(...)` with `policies.allow_users(...)`.
+
+### Cog Usage
+If you need an operator-facing entrypoint for DM functionality, keep it narrow and task-specific rather than exposing a generic DM surface.
+
+Use a small cog command only for explicit, safe flows such as self-test notifications:
+
+```python
+from capy_discord.services import dm, policies
+
+policy = policies.allow_users(interaction.user.id, max_recipients=1)
+
+draft = await dm.compose_to_user(
+    guild,
+    interaction.user.id,
+    message,
+    policy=policy,
+)
+self.log.info("Notify preview\n%s", dm.render_preview(draft))
+
+result = await dm.send(guild, draft)
+```
+
+This pattern is implemented in `capy_discord/exts/tools/notify.py`. Do not add broad `/dm` or bulk-message commands; use explicit commands tied to a specific feature or operational workflow.
+
+## 5. Error Handling
 We use a global `on_tree_error` handler in `bot.py`.
 *   Exceptions are logged with the specific module name.
 *   Do not wrap every command in `try/except` blocks unless handling specific business logic errors.
 
-## 5. Logging
+## 6. Logging
 All logs follow a standardized format for consistency across the console and log files.
 
 *   **Format**: `[{asctime}] [{levelname:<8}] {name}: {message}`
@@ -113,12 +175,12 @@ self.log = logging.getLogger(__name__)
 self.log.info("Starting feature X")
 ```
 
-## 6. Time and Timezones
+## 7. Time and Timezones
 **Always use `zoneinfo.ZoneInfo`**.
 *   **Storage**: `UTC`.
 *   **Usage**: `datetime.now(ZoneInfo("UTC"))`.
 
-## 7. Development Workflow
+## 8. Development Workflow
 
 ### Linear & Branching
 *   **Issue Tracking**: Every task must have a Linear issue.
@@ -146,7 +208,7 @@ Format: `<type>(<scope>): <subject>`
 2.  **Reviewers**: Must include `Shamik` and `Jason`.
 3.  **Checks**: All CI checks (Lint, Test, Build) must pass.
 
-## 8. Cog Standards
+## 9. Cog Standards
 
 ### Initialization
 All Cogs **MUST** accept the `bot` instance in `__init__`. The use of the global `capy_discord.instance` is **deprecated** and should not be used in new code.
