@@ -10,6 +10,7 @@ license = { text = "MIT" }
 requires-python = "==3.13.*"
 dependencies = [
     "discord-py>=2.6.4",
+    "httpx>=0.28.1",
     "pydantic-settings>=2.12.0",
     "tzdata>=2025.3; sys_platform == 'win32'",
 ]
@@ -22,6 +23,7 @@ dev = [
     "uv>=0.9.10",
     "taskipy>=1.14.1",
     "pytest>=9.0.1",
+    "pytest-asyncio>=0.25.0",
     "pytest-xdist>=3.8.0",
     "pytest-cov>=7.0.0",
     "coverage>=7.12.0",
@@ -101,7 +103,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ANN", "D", "S101"]
+"tests/*" = ["ANN", "D", "PLR2004", "S101"]
 "__init__.py" = ["F401"]
 
 [tool.ruff.lint.isort]
@@ -114,3 +116,8 @@ convention = "google"
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires a locally running backend API and explicit opt-in",
+]
