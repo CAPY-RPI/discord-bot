@@ -19,13 +19,15 @@ class VerifyView(BaseView):
     def __init__(
         self,
         *,
+        attempt_id: int,
         target_user_id: int,
-        on_accept: Callable[[discord.Interaction, int], Awaitable[None]],
+        on_accept: Callable[[discord.Interaction, int, int], Awaitable[bool]],
         on_timeout_callback: Callable[[int], Awaitable[None]],
         timeout: float = 1800,
     ) -> None:
         """Initialize a verification view tied to one target user."""
         super().__init__(timeout=timeout)
+        self.attempt_id = attempt_id
         self.target_user_id = target_user_id
         self._on_accept = on_accept
         self._on_timeout_callback = on_timeout_callback
@@ -40,11 +42,12 @@ class VerifyView(BaseView):
             )
             return
 
-        await self._on_accept(interaction, self.target_user_id)
-        self.disable_all_items()
-        if self.message:
-            await self.message.edit(view=self)
-        self.stop()
+        completed = await self._on_accept(interaction, self.target_user_id, self.attempt_id)
+        if completed:
+            self.disable_all_items()
+            if self.message:
+                await self.message.edit(view=self)
+            self.stop()
 
     async def on_timeout(self) -> None:
         """Mark state timeout and disable all controls when view expires."""
