@@ -6,6 +6,7 @@ from discord.ext import commands
 
 from capy_discord.ui.forms import ModelModal
 
+from ._guild_service import GuildService
 from ._schemas import (
     AnnouncementChannelForm,
     ChannelSettingsForm,
@@ -29,13 +30,7 @@ class GuildCog(commands.Cog):
         if store is None:
             store = {}
             setattr(bot, "guild_settings_store", store)  # noqa: B010
-        self._store = store
-
-    def _ensure_settings(self, guild_id: int) -> GuildSettings:
-        """Return existing settings for a guild or create defaults."""
-        if guild_id not in self._store:
-            self._store[guild_id] = GuildSettings()
-        return self._store[guild_id]
+        self._service = GuildService(store)
 
     # -- /guild command with action choices ---------------------------------
 
@@ -57,7 +52,7 @@ class GuildCog(commands.Cog):
             await interaction.response.send_message("This must be used in a server.", ephemeral=True)
             return
 
-        settings = self._ensure_settings(interaction.guild.id)
+        settings = self._service.get_settings(interaction.guild.id)
 
         if action == "channels":
             await self._open_channels(interaction, settings)
@@ -132,51 +127,48 @@ class GuildCog(commands.Cog):
     # Each callback receives (interaction, validated_pydantic_model).
 
     async def _handle_channels(self, interaction: discord.Interaction, form: ChannelSettingsForm) -> None:
-        """Persist channel settings from validated form data."""
+        """Delegate channel settings persistence to the service."""
         if not interaction.guild:
             await interaction.response.send_message("This must be used in a server.", ephemeral=True)
             return
-        settings = self._ensure_settings(interaction.guild.id)
-        settings.reports_channel = int(form.reports) if form.reports.isdigit() else None
-        settings.announcements_channel = int(form.announcements) if form.announcements.isdigit() else None
-        settings.feedback_channel = int(form.feedback) if form.feedback.isdigit() else None
+        self._service.update_channels(
+            interaction.guild.id,
+            reports=form.reports,
+            announcements=form.announcements,
+            feedback=form.feedback,
+        )
         await interaction.response.send_message("✅ Channel settings saved.", ephemeral=True)
 
     async def _handle_roles(self, interaction: discord.Interaction, form: RoleSettingsForm) -> None:
-        """Persist role settings from validated form data."""
+        """Delegate role settings persistence to the service."""
         if not interaction.guild:
             await interaction.response.send_message("This must be used in a server.", ephemeral=True)
             return
-        settings = self._ensure_settings(interaction.guild.id)
-        settings.admin_role = form.admin or None
-        settings.member_role = form.member or None
+        self._service.update_roles(interaction.guild.id, admin=form.admin, member=form.member)
         await interaction.response.send_message("✅ Role settings saved.", ephemeral=True)
 
     async def _handle_announcement(self, interaction: discord.Interaction, form: AnnouncementChannelForm) -> None:
-        """Persist the announcement channel from validated form data."""
+        """Delegate announcement channel persistence to the service."""
         if not interaction.guild:
             await interaction.response.send_message("This must be used in a server.", ephemeral=True)
             return
-        settings = self._ensure_settings(interaction.guild.id)
-        settings.announcements_channel = int(form.channel) if form.channel.isdigit() else None
+        self._service.update_announcement_channel(interaction.guild.id, channel=form.channel)
         await interaction.response.send_message("✅ Announcement channel saved.", ephemeral=True)
 
     async def _handle_feedback(self, interaction: discord.Interaction, form: FeedbackChannelForm) -> None:
-        """Persist the feedback channel from validated form data."""
+        """Delegate feedback channel persistence to the service."""
         if not interaction.guild:
             await interaction.response.send_message("This must be used in a server.", ephemeral=True)
             return
-        settings = self._ensure_settings(interaction.guild.id)
-        settings.feedback_channel = int(form.channel) if form.channel.isdigit() else None
+        self._service.update_feedback_channel(interaction.guild.id, channel=form.channel)
         await interaction.response.send_message("✅ Feedback channel saved.", ephemeral=True)
 
     async def _handle_welcome(self, interaction: discord.Interaction, form: WelcomeMessageForm) -> None:
-        """Persist the onboarding welcome message from validated form data."""
+        """Delegate welcome message persistence to the service."""
         if not interaction.guild:
             await interaction.response.send_message("This must be used in a server.", ephemeral=True)
             return
-        settings = self._ensure_settings(interaction.guild.id)
-        settings.onboarding_welcome = form.message or None
+        self._service.update_welcome_message(interaction.guild.id, message=form.message)
         await interaction.response.send_message("✅ Welcome message updated.", ephemeral=True)
 
 
