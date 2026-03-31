@@ -147,6 +147,31 @@ class OrganizationResponse(TypedDict, total=False):
     date_created: str
     date_modified: str
 
+#TODO FAQ database models and methods to work on
+
+class CreateFAQRequest(TypedDict, total=False):
+    """Represents FAQ creation payloads."""
+
+    question: Required[str]
+    answer: str
+class UpdateFAQRequest(TypedDict, total=False):
+    """Represents FAQ update payloads."""
+
+    question: str
+    answer: str
+
+
+class FAQResponse(TypedDict, total=False):
+    """Represents FAQ response payloads."""
+
+    fid: str
+    question: str
+    answer: str
+
+
+
+
+
 
 class UpdateUserRequest(TypedDict, total=False):
     """Represents user update payloads."""
@@ -503,7 +528,31 @@ class BackendAPIClient:
         msg = "Backend client has not been initialized"
         raise BackendClientNotInitializedError(msg)
 
-
+    #TODO CRUD, create retrieve update delete
+    async def list_faqs(self, *, question: str | None = None) -> list[FAQResponse]:
+        """Call `GET /faqs`."""
+        params = _optional_params(question=question)
+        payload = await self._request("GET", "/faqs", params=params)
+        return cast("list[FAQResponse]", _typed_list(payload))
+    
+    async def get_faq(self, faq_id: str) -> FAQResponse:
+        """Call `GET /faqs/{fid}`."""
+        payload = await self._request("GET", f"/faqs/{faq_id}")
+        return cast("FAQResponse", _typed_dict(payload))
+    
+    async def create_faq(self, data: CreateFAQRequest) -> FAQResponse:
+        """Call `POST /faqs`."""
+        payload = await self._request("POST", "/faqs", json_body=data, expected_statuses={HTTP_STATUS_CREATED})
+        return cast("FAQResponse", _typed_dict(payload))
+    async def update_faq(self, faq_id: str, data: UpdateFAQRequest) -> FAQResponse:
+        """Call `PUT /faqs/{fid}`."""
+        payload = await self._request("PUT", f"/faqs/{faq_id}", json_body=data)
+        return cast("FAQResponse", _typed_dict(payload))
+    async def delete_faq(self, faq_id: str) -> None:
+        """Call `DELETE /faqs/{fid}`."""
+        await self._request("DELETE", f"/faqs/{faq_id}", expected_statuses={HTTP_STATUS_NO_CONTENT})
+    
+    
 class _ClientState:
     def __init__(self) -> None:
         self.client: BackendAPIClient | None = None
