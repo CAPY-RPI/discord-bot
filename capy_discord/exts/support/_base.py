@@ -8,11 +8,12 @@ import discord
 from discord import TextChannel
 from discord.ext import commands
 
-from capy_discord.exts import tickets
-from capy_discord.exts.tickets._schemas import TicketSchema
 from capy_discord.ui import embeds
 from capy_discord.ui.forms import ModelModal
 from capy_discord.ui.views import ModalLauncherView
+
+from . import STATUS_ACKNOWLEDGED, STATUS_IGNORED, STATUS_UNMARKED
+from ._schemas import TicketSchema
 
 
 class TicketBase(commands.Cog):
@@ -210,11 +211,11 @@ class TicketBase(commands.Cog):
 
         # Update color based on status using standard colors
         if status == "Unmarked":
-            embed.colour = tickets.STATUS_UNMARKED
+            embed.colour = STATUS_UNMARKED
         elif status == "Acknowledged":
-            embed.colour = tickets.STATUS_ACKNOWLEDGED
+            embed.colour = STATUS_ACKNOWLEDGED
         elif status == "Ignored":
-            embed.colour = tickets.STATUS_IGNORED
+            embed.colour = STATUS_IGNORED
 
         # Update footer
         embed.set_footer(text=f"Status: {status} | {self.reaction_footer}")

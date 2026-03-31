@@ -1,8 +1,8 @@
-"""Onboarding and guild setup flow.
+"""Onboarding configuration and verification flow.
 
 This extension provides:
 - Guild bootstrap checklist on bot invite.
-- In-memory setup configuration via /setup commands.
+- In-memory onboarding configuration via /onboarding commands.
 - Member onboarding with rule acknowledgement and role assignment.
 """
 
@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from datetime import datetime, timedelta
 from functools import partial
 from zoneinfo import ZoneInfo
@@ -28,11 +27,11 @@ def utc_now() -> datetime:
     return datetime.now(ZoneInfo("UTC"))
 
 
-class Setup(commands.GroupCog, group_name="setup", group_description="Configure onboarding and server setup"):
-    """Cog that manages guild setup and member onboarding."""
+class Onboarding(commands.GroupCog, group_name="onboarding", group_description="Configure member onboarding"):
+    """Cog that manages guild onboarding and member verification."""
 
     def __init__(self, bot: commands.Bot) -> None:
-        """Initialize in-memory stores for setup and user onboarding state."""
+        """Initialize in-memory stores for onboarding and user state."""
         self.bot = bot
         self.log = logging.getLogger(__name__)
 
@@ -60,7 +59,7 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
         return f"{guild_id}:{user_id}"
 
     def _ensure_setup(self, guild_id: int) -> GuildSetupConfig:
-        """Get or create setup configuration for a guild."""
+        """Get or create onboarding configuration for a guild."""
         if guild_id not in self._setup_store:
             self._setup_store[guild_id] = GuildSetupConfig()
         return self._setup_store[guild_id]
@@ -124,42 +123,30 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
         return channel.mention if channel else f"<#{channel_id}> (not found)"
 
     def _missing_items(self, config: GuildSetupConfig) -> list[str]:
-        """Return required setup items that are still missing."""
+        """Return required onboarding items that are still missing."""
         missing: list[str] = []
-        if not config.admin_role_ids:
-            missing.append("Primary admin role(s)")
-        if not config.moderator_role_ids:
-            missing.append("Moderator role(s)")
         if config.log_channel_id is None:
             missing.append("Log channel")
-        if config.announcement_channel_id is None:
-            missing.append("Announcement channel")
         if config.welcome_channel_id is None:
             missing.append("Welcome channel")
-        if config.support_channel_id is None:
-            missing.append("Support/ticket channel")
         if not config.rules_location:
             missing.append("Rules/verification flow")
         if config.member_role_id is None:
             missing.append("Member role for verified users")
         return missing
 
-    def _build_setup_message(self, guild: discord.Guild) -> str:
-        """Build a guild-specific setup checklist message."""
+    def _build_onboarding_message(self, guild: discord.Guild) -> str:
+        """Build a guild-specific onboarding checklist message."""
         config = self._ensure_setup(guild.id)
         missing = self._missing_items(config)
 
         status_lines = [
-            f"- Primary admin role(s): {self._format_role_mentions(guild, config.admin_role_ids)}",
-            f"- Moderator role(s): {self._format_role_mentions(guild, config.moderator_role_ids)}",
             f"- Log channel: {self._format_channel_mention(guild, config.log_channel_id)}",
             f"- Onboarding event logging: {'Yes' if config.log_events else 'No'}",
-            f"- Announcement channel: {self._format_channel_mention(guild, config.announcement_channel_id)}",
             f"- Welcome channel: {self._format_channel_mention(guild, config.welcome_channel_id)}",
             f"- Welcome DMs enabled: {'Yes' if config.welcome_dm_enabled else 'No'}",
             f"- Auto-remove unverified members: {'Yes' if config.auto_kick_unverified else 'No'}",
             f"- Grace period: {config.grace_period_hours} hour(s)",
-            f"- Support/ticket channel: {self._format_channel_mention(guild, config.support_channel_id)}",
             f"- Rules/verification flow: {config.rules_location or 'Not set'}",
             (
                 "- Verification member role: "
@@ -171,24 +158,17 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
 
         return (
             "Thanks for inviting CAPY.\n\n"
-            "Run these commands to configure setup:\n"
-            "- `/setup roles`\n"
-            "- `/setup channels`\n"
-            "- `/setup config`\n"
-            "- `/setup summary`\n\n"
-            "**Current Setup Status**\n"
+            "Run these commands to configure onboarding:\n"
+            "- `/onboarding roles`\n"
+            "- `/onboarding channels`\n"
+            "- `/onboarding config`\n"
+            "- `/onboarding summary`\n\n"
+            "**Current Onboarding Status**\n"
             f"{'\n'.join(status_lines)}\n\n"
             "**Missing Required Items**\n"
             f"{missing_text}\n\n"
             "Data storage is currently in-memory and resets on bot restart."
         )
-
-    def _parse_role_ids(self, raw: str | None, guild: discord.Guild) -> list[int]:
-        """Parse role IDs from user input and keep only roles that exist in the guild."""
-        if not raw:
-            return []
-        parsed = {int(role_id) for role_id in re.findall(r"\d+", raw)}
-        return sorted([role_id for role_id in parsed if guild.get_role(role_id) is not None])
 
     async def _send_log_message(self, guild: discord.Guild, config: GuildSetupConfig, message: str) -> None:
         """Send a best-effort onboarding event log message to the configured log channel."""
@@ -285,7 +265,7 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
             return
 
         self._cancel_grace_task(guild_id, user_id)
-        self.log.info("Setup timed out for user %s in guild %s", user_id, guild_id)
+        self.log.info("Onboarding timed out for user %s in guild %s", user_id, guild_id)
 
         guild = self.bot.get_guild(guild_id)
         if guild is None:
@@ -404,11 +384,15 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
             else:
                 config = self._ensure_setup(guild.id)
                 if config.member_role_id is None:
-                    failure_message = "Setup incomplete: configure a verification member role with `/setup roles`."
+                    failure_message = (
+                        "Onboarding is incomplete: configure a verification member role with `/onboarding roles`."
+                    )
                 else:
                     role = guild.get_role(config.member_role_id)
                     if role is None:
-                        failure_message = "Configured member role no longer exists. Please reconfigure `/setup roles`."
+                        failure_message = (
+                            "Configured member role no longer exists. Please reconfigure `/onboarding roles`."
+                        )
                     else:
                         member = guild.get_member(target_user_id)
                         if member is None:
@@ -455,17 +439,17 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild) -> None:
-        """Send setup checklist to first public channel when bot is added to a guild."""
+        """Send onboarding checklist to first public channel when bot is added to a guild."""
         channel = self._first_public_text_channel(guild)
         if channel is None:
-            self.log.warning("No public text channel available for setup message in guild %s", guild.id)
+            self.log.warning("No public text channel available for onboarding message in guild %s", guild.id)
             return
 
         try:
-            await channel.send(self._build_setup_message(guild), allowed_mentions=discord.AllowedMentions.none())
-            self.log.info("Posted setup checklist for guild %s in channel %s", guild.id, channel.id)
+            await channel.send(self._build_onboarding_message(guild), allowed_mentions=discord.AllowedMentions.none())
+            self.log.info("Posted onboarding checklist for guild %s in channel %s", guild.id, channel.id)
         except discord.HTTPException as exc:
-            self.log.warning("Failed to post setup checklist for guild %s: %s", guild.id, exc)
+            self.log.warning("Failed to post onboarding checklist for guild %s: %s", guild.id, exc)
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
@@ -476,7 +460,7 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
 
         if config.welcome_channel_id is None or config.member_role_id is None:
             self.log.info(
-                "Skipping onboarding for member %s in guild %s due to incomplete setup.",
+                "Skipping onboarding for member %s in guild %s due to incomplete onboarding config.",
                 member.id,
                 member.guild.id,
             )
@@ -514,11 +498,11 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
             f"🟡 Onboarding started for {member.mention} ({member.id})",
         )
 
-    @app_commands.command(name="summary", description="Show current setup values and missing required items")
+    @app_commands.command(name="summary", description="Show current onboarding values and missing required items")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup_summary(self, interaction: discord.Interaction) -> None:
-        """Return a summary of setup state for this guild."""
+    async def onboarding_summary(self, interaction: discord.Interaction) -> None:
+        """Return a summary of onboarding state for this guild."""
         if interaction.guild is None:
             await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
             return
@@ -534,19 +518,15 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
         missing_lines = [f"- {item}" for item in missing] if missing else ["- None"]
 
         lines = [
-            "**Setup Summary**",
+            "**Onboarding Summary**",
             f"Enabled: {'Yes' if config.enabled else 'No'}",
-            f"Primary admin role(s): {self._format_role_mentions(interaction.guild, config.admin_role_ids)}",
-            f"Moderator role(s): {self._format_role_mentions(interaction.guild, config.moderator_role_ids)}",
             f"Verification member role: {verification_member_role}",
             f"Log channel: {self._format_channel_mention(interaction.guild, config.log_channel_id)}",
             f"Onboarding event logging: {'Yes' if config.log_events else 'No'}",
-            f"Announcement channel: {self._format_channel_mention(interaction.guild, config.announcement_channel_id)}",
             f"Welcome channel: {self._format_channel_mention(interaction.guild, config.welcome_channel_id)}",
             f"Welcome DMs enabled: {'Yes' if config.welcome_dm_enabled else 'No'}",
             f"Auto-remove unverified members: {'Yes' if config.auto_kick_unverified else 'No'}",
             f"Grace period: {config.grace_period_hours} hour(s)",
-            f"Support/ticket channel: {self._format_channel_mention(interaction.guild, config.support_channel_id)}",
             f"Rules/verification flow: {config.rules_location or 'Not set'}",
             f"Acceptance method: {config.verification_acceptance}",
             "",
@@ -558,55 +538,43 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
 
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
-    @app_commands.command(name="roles", description="Set trusted admin/mod roles and verification member role")
+    @app_commands.command(name="roles", description="Set the verification member role")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
-        admin_roles="Role mentions or IDs (space/comma separated)",
-        moderator_roles="Role mentions or IDs (space/comma separated)",
         member_role="Role granted when onboarding is completed",
     )
-    async def setup_roles(
+    async def onboarding_roles(
         self,
         interaction: discord.Interaction,
-        admin_roles: str | None = None,
-        moderator_roles: str | None = None,
         member_role: discord.Role | None = None,
     ) -> None:
-        """Update role-based setup settings for this guild."""
+        """Update role-based onboarding settings for this guild."""
         if interaction.guild is None:
             await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
             return
 
         config = self._ensure_setup(interaction.guild.id)
 
-        if admin_roles is not None:
-            config.admin_role_ids = self._parse_role_ids(admin_roles, interaction.guild)
-        if moderator_roles is not None:
-            config.moderator_role_ids = self._parse_role_ids(moderator_roles, interaction.guild)
         if member_role is not None:
             config.member_role_id = member_role.id
 
-        await interaction.response.send_message("✅ Setup roles updated.", ephemeral=True)
+        await interaction.response.send_message("✅ Onboarding roles updated.", ephemeral=True)
 
-    @app_commands.command(name="channels", description="Set channels used by logs, announcements, welcome, and support")
+    @app_commands.command(name="channels", description="Set channels used by onboarding logs and welcome prompts")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.describe(
-        log_channel="Channel for mod/automod/error logs",
-        announcement_channel="Channel for server announcements",
+        log_channel="Channel for onboarding lifecycle logs",
         welcome_channel="Channel where onboarding welcome messages are posted",
-        support_channel="Channel for support/ticket routing",
     )
-    async def setup_channels(
+    async def onboarding_channels(
         self,
         interaction: discord.Interaction,
         log_channel: discord.TextChannel | None = None,
-        announcement_channel: discord.TextChannel | None = None,
         welcome_channel: discord.TextChannel | None = None,
-        support_channel: discord.TextChannel | None = None,
     ) -> None:
-        """Update channel-based setup settings for this guild."""
+        """Update channel-based onboarding settings for this guild."""
         if interaction.guild is None:
             await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
             return
@@ -615,14 +583,10 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
 
         if log_channel is not None:
             config.log_channel_id = log_channel.id
-        if announcement_channel is not None:
-            config.announcement_channel_id = announcement_channel.id
         if welcome_channel is not None:
             config.welcome_channel_id = welcome_channel.id
-        if support_channel is not None:
-            config.support_channel_id = support_channel.id
 
-        await interaction.response.send_message("✅ Setup channels updated.", ephemeral=True)
+        await interaction.response.send_message("✅ Onboarding channels updated.", ephemeral=True)
 
     @app_commands.command(name="config", description="Set onboarding flow behavior")
     @app_commands.guild_only()
@@ -636,7 +600,7 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
         rules_location="Where your rules/verification policy is documented (use 'clear' to unset)",
         message="Onboarding message template (use {user} and {rules}; use 'clear' to unset)",
     )
-    async def setup_onboarding(  # noqa: PLR0913
+    async def onboarding_config(  # noqa: PLR0913
         self,
         interaction: discord.Interaction,
         enabled: bool | None = None,
@@ -647,7 +611,7 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
         rules_location: str | None = None,
         message: str | None = None,
     ) -> None:
-        """Update onboarding-specific setup settings for this guild."""
+        """Update onboarding-specific settings for this guild."""
         if interaction.guild is None:
             await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
             return
@@ -671,11 +635,11 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
 
         await interaction.response.send_message("✅ Onboarding settings updated.", ephemeral=True)
 
-    @app_commands.command(name="reset", description="Reset setup and onboarding state for this guild")
+    @app_commands.command(name="reset", description="Reset onboarding config and member state for this guild")
     @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup_reset(self, interaction: discord.Interaction) -> None:
-        """Clear setup and user onboarding state for this guild."""
+    async def onboarding_reset(self, interaction: discord.Interaction) -> None:
+        """Clear onboarding config and user state for this guild."""
         if interaction.guild is None:
             await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
             return
@@ -691,12 +655,9 @@ class Setup(commands.GroupCog, group_name="setup", group_description="Configure 
         for key in [state_key for state_key in self._user_state_store if state_key.startswith(prefix)]:
             self._user_state_store.pop(key, None)
 
-        await interaction.response.send_message("✅ Setup and onboarding state reset for this guild.", ephemeral=True)
-
-
-Onboarding = Setup
+        await interaction.response.send_message("✅ Onboarding state reset for this guild.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
-    """Set up the Setup cog."""
-    await bot.add_cog(Setup(bot))
+    """Set up the Onboarding cog."""
+    await bot.add_cog(Onboarding(bot))

@@ -7,7 +7,7 @@ import pytest
 from discord import app_commands
 from discord.ext import commands
 
-from capy_discord.exts.setup.setup import Onboarding, utc_now
+from capy_discord.exts.onboarding.onboarding import Onboarding, utc_now
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def _interaction_with_permissions(*, manage_guild: bool) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_on_guild_join_posts_setup_message_to_first_public_channel(cog):
+async def test_on_guild_join_posts_onboarding_message_to_first_public_channel(cog):
     guild = MagicMock(spec=discord.Guild)
     guild.id = 123
     guild.default_role = MagicMock()
@@ -68,12 +68,12 @@ async def test_on_guild_join_posts_setup_message_to_first_public_channel(cog):
     private_channel.send.assert_not_called()
     public_channel.send.assert_called_once()
     sent_text = public_channel.send.call_args.args[0]
-    assert "Run these commands to configure setup" in sent_text
-    assert "/setup roles" in sent_text
+    assert "Run these commands to configure onboarding" in sent_text
+    assert "/onboarding roles" in sent_text
 
 
 @pytest.mark.asyncio
-async def test_on_member_join_skips_with_incomplete_setup(cog):
+async def test_on_member_join_skips_with_incomplete_onboarding_config(cog):
     guild = MagicMock(spec=discord.Guild)
     guild.id = 100
 
@@ -121,10 +121,10 @@ async def test_on_member_join_sets_pending_and_sends_welcome(cog):
 
 @pytest.mark.parametrize(
     "command_name",
-    ["setup_summary", "setup_roles", "setup_channels", "setup_onboarding", "setup_reset"],
+    ["onboarding_summary", "onboarding_roles", "onboarding_channels", "onboarding_config", "onboarding_reset"],
 )
 @pytest.mark.asyncio
-async def test_setup_commands_require_manage_guild_for_non_managers(cog, command_name):
+async def test_onboarding_commands_require_manage_guild_for_non_managers(cog, command_name):
     interaction = _interaction_with_permissions(manage_guild=False)
 
     with pytest.raises(app_commands.MissingPermissions) as exc_info:
@@ -134,43 +134,30 @@ async def test_setup_commands_require_manage_guild_for_non_managers(cog, command
 
 
 @pytest.mark.asyncio
-async def test_setup_roles_updates_config(cog):
+async def test_onboarding_roles_updates_config(cog):
     guild = MagicMock(spec=discord.Guild)
     guild.id = 99
 
-    role_1 = MagicMock(spec=discord.Role)
-    role_1.id = 1
-    role_2 = MagicMock(spec=discord.Role)
-    role_2.id = 2
-    role_3 = MagicMock(spec=discord.Role)
-    role_3.id = 3
     member_role = MagicMock(spec=discord.Role)
     member_role.id = 50
-
-    roles = {1: role_1, 2: role_2, 3: role_3, 50: member_role}
-    guild.get_role.side_effect = roles.get
 
     interaction = MagicMock(spec=discord.Interaction)
     interaction.guild = guild
     interaction.response = MagicMock()
     interaction.response.send_message = AsyncMock()
 
-    await cog.setup_roles.callback(
+    await cog.onboarding_roles.callback(
         cog,
         interaction,
-        admin_roles="<@&2>, <@&1>",
-        moderator_roles="3 3",
         member_role=member_role,
     )
 
     config = cog._ensure_setup(guild.id)
-    assert config.admin_role_ids == [1, 2]
-    assert config.moderator_role_ids == [3]
     assert config.member_role_id == 50
 
 
 @pytest.mark.asyncio
-async def test_setup_onboarding_updates_config(cog):
+async def test_onboarding_config_updates_config(cog):
     guild = MagicMock(spec=discord.Guild)
     guild.id = 101
 
@@ -179,7 +166,7 @@ async def test_setup_onboarding_updates_config(cog):
     interaction.response = MagicMock()
     interaction.response.send_message = AsyncMock()
 
-    await cog.setup_onboarding.callback(
+    await cog.onboarding_config.callback(
         cog,
         interaction,
         enabled=False,
@@ -295,7 +282,7 @@ async def test_enforce_grace_period_kicks_unverified_member(cog, monkeypatch):
     async def fake_sleep(_seconds: float) -> None:
         state.started_at_utc = utc_now() - timedelta(hours=2)
 
-    monkeypatch.setattr("capy_discord.exts.setup.setup.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("capy_discord.exts.onboarding.onboarding.asyncio.sleep", fake_sleep)
 
     await cog._enforce_grace_period(guild.id, member.id, 1)
 
@@ -385,7 +372,7 @@ async def test_stale_grace_period_task_does_not_kick_after_timeout_retry(cog, mo
     async def fake_sleep(_seconds: float) -> None:
         state.started_at_utc = utc_now() - timedelta(hours=2)
 
-    monkeypatch.setattr("capy_discord.exts.setup.setup.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("capy_discord.exts.onboarding.onboarding.asyncio.sleep", fake_sleep)
 
     await cog._enforce_grace_period(guild.id, member.id, 1)
 
@@ -491,7 +478,7 @@ async def test_verified_user_is_not_removed_by_old_grace_task(cog, monkeypatch):
     async def fake_sleep(_seconds: float) -> None:
         state.started_at_utc = utc_now() - timedelta(hours=2)
 
-    monkeypatch.setattr("capy_discord.exts.setup.setup.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("capy_discord.exts.onboarding.onboarding.asyncio.sleep", fake_sleep)
 
     interaction = MagicMock(spec=discord.Interaction)
     interaction.guild = guild

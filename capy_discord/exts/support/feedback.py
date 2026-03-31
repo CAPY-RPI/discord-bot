@@ -7,8 +7,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from capy_discord.config import settings
-from capy_discord.exts import tickets
 
+from . import REACTION_FOOTER, STATUS_EMOJI
 from ._base import TicketBase
 from ._schemas import FeedbackForm
 
@@ -28,9 +28,9 @@ class Feedback(TicketBase):
         super().__init__(
             bot,
             FeedbackForm,  # Pass Pydantic schema class
-            tickets.STATUS_EMOJI,
+            STATUS_EMOJI,
             command_config,
-            tickets.REACTION_FOOTER,
+            REACTION_FOOTER,
         )
         self.log = logging.getLogger(__name__)
         self.log.info("Feedback cog initialized")

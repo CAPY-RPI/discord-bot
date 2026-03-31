@@ -28,6 +28,17 @@ from typing import NoReturn
 
 from capy_discord import exts
 
+PRODUCTION_EXTENSIONS = frozenset(
+    {
+        "capy_discord.exts.core.telemetry",
+        "capy_discord.exts.event.event",
+        "capy_discord.exts.members.member",
+        "capy_discord.exts.members.profile",
+        "capy_discord.exts.onboarding.onboarding",
+        "capy_discord.exts.tools.sync",
+    }
+)
+
 
 def unqualify(name: str) -> str:
     """Return an unqualified name given a qualified module/package `name`."""
@@ -35,7 +46,7 @@ def unqualify(name: str) -> str:
 
 
 def walk_extensions() -> Iterator[str]:
-    """Yield extension names from the bot.exts subpackage."""
+    """Yield production extension names from the bot.exts subpackage."""
 
     def on_error(name: str) -> NoReturn:
         raise ImportError(name=name)  # pragma: no cover
@@ -51,7 +62,8 @@ def walk_extensions() -> Iterator[str]:
                 # We don't yield it, but pkgutil will continue to walk its contents.
                 continue
 
-        yield module.name
+        if module.name in PRODUCTION_EXTENSIONS:
+            yield module.name
 
 
 EXTENSIONS = frozenset(walk_extensions())
