@@ -65,6 +65,7 @@ class CreateEventRequest(TypedDict, total=False):
     """Represents event creation payloads."""
 
     org_id: Required[str]
+    title: str
     description: str
     event_time: str
     location: str
@@ -73,6 +74,7 @@ class CreateEventRequest(TypedDict, total=False):
 class UpdateEventRequest(TypedDict, total=False):
     """Represents event update payloads."""
 
+    title: str
     description: str
     event_time: str
     location: str
@@ -89,6 +91,7 @@ class EventResponse(TypedDict, total=False):
     """Represents event response payloads."""
 
     eid: str
+    title: str
     description: str
     event_time: str
     location: str
