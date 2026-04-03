@@ -608,6 +608,7 @@ class Event(commands.Cog):
             encoded_description = self._encode_event_description(event.event_name, event.description)
 
             # Create event in backend
+            #TODO read for FAQ creation
             client = get_database_pool()
             request_data: CreateEventRequest = {
                 "org_id": str(guild_id),
@@ -696,6 +697,7 @@ class Event(commands.Cog):
                 return
 
             # Update event in backend
+            #TODO read for update code for FAQ
             request_data: UpdateEventRequest = {
                 "description": encoded_description,
                 "event_time": event_time_iso,
