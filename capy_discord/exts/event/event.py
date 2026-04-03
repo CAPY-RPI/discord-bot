@@ -464,6 +464,7 @@ class Event(commands.Cog):
     async def _on_edit_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
         """Handle event selection for editing."""
         initial_data = {
+            "event_id": selected_event.event_id,
             "event_name": selected_event.event_name,
             "event_date": selected_event.event_date.strftime("%m-%d-%Y"),
             "event_time": selected_event.event_time.strftime("%H:%M"),
@@ -604,14 +605,12 @@ class Event(commands.Cog):
                 event_datetime = event_datetime.replace(tzinfo=est)
             event_time_iso = event_datetime.astimezone(ZoneInfo("UTC")).isoformat()
 
-            # Encode event name in description
-            encoded_description = self._encode_event_description(event.event_name, event.description)
-
             # Create event in backend
             client = get_database_pool()
             request_data: CreateEventRequest = {
                 "org_id": str(guild_id),
-                "description": encoded_description,
+                "title": event.event_name,
+                "description": event.description,
                 "event_time": event_time_iso,
                 "location": event.location,
             }
@@ -674,21 +673,7 @@ class Event(commands.Cog):
                 event_datetime = event_datetime.replace(tzinfo=est)
             event_time_iso = event_datetime.astimezone(ZoneInfo("UTC")).isoformat()
 
-            # Encode event name in description
-            encoded_description = self._encode_event_description(updated_event.event_name, updated_event.description)
-
-            # For now, we need to find the event ID from the backend
-            # We'll search for events matching the original event name
-            client = get_database_pool()
-            backend_events = await client.list_events_by_organization(str(guild_id))
-
-            event_id = None
-            for be in backend_events:
-                desc = be.get("description", "")
-                name, _ = self._decode_event_description(desc)
-                if name == original_event.event_name:
-                    event_id = be.get("eid")
-                    break
+            event_id = original_event.event_id
 
             if not event_id:
                 embed = error_embed("Event Not Found", "Could not find the event to update.")
@@ -696,8 +681,10 @@ class Event(commands.Cog):
                 return
 
             # Update event in backend
+            client = get_database_pool()
             request_data: UpdateEventRequest = {
-                "description": encoded_description,
+                "title": updated_event.event_name,
+                "description": updated_event.description,
                 "event_time": event_time_iso,
                 "location": updated_event.location,
             }
@@ -753,20 +740,15 @@ class Event(commands.Cog):
                     await interaction.followup.send(embed=success, ephemeral=True)
                     return
 
+                event_id = selected_event.event_id
+                if not event_id:
+                    error = error_embed("Event Not Found", "Could not find the event to delete.")
+                    await interaction.followup.send(embed=error, ephemeral=True)
+                    return
+
                 client = get_database_pool()
-                backend_events = await client.list_events_by_organization(str(guild_id))
-
-                event_id = None
-                for be in backend_events:
-                    desc = be.get("description", "")
-                    name, _ = self._decode_event_description(desc)
-                    if name == selected_event.event_name:
-                        event_id = be.get("eid")
-                        break
-
-                if event_id:
-                    await client.delete_event(event_id)
-                    self.log.info("Deleted event '%s' from guild %s", selected_event.event_name, guild_id)
+                await client.delete_event(event_id)
+                self.log.info("Deleted event '%s' from guild %s", selected_event.event_name, guild_id)
 
                 success = success_embed("Event Deleted", "The event has been deleted successfully!")
                 await interaction.followup.send(embed=success, ephemeral=True)
@@ -803,11 +785,6 @@ class Event(commands.Cog):
         return events
 
     @staticmethod
-    def _encode_event_description(event_name: str, description: str) -> str:
-        """Encode event_name into the description since backend doesn't have this field."""
-        return f"[capy_event_name]{event_name}\n{description}"
-
-    @staticmethod
     def _decode_event_description(encoded: str) -> tuple[str, str]:
         """Decode event_name and description from encoded string."""
         if encoded.startswith("[capy_event_name]"):
@@ -821,9 +798,12 @@ class Event(commands.Cog):
 
     def _from_backend_event(self, backend_event: EventResponse) -> EventSchema:
         """Convert a backend event response to EventSchema."""
-        # Decode the event name from description
+        # Prefer first-class title field; keep legacy encoded fallback for older rows.
         description_text = backend_event.get("description", "")
-        event_name, description = self._decode_event_description(description_text)
+        event_name = backend_event.get("title", "")
+        description = description_text
+        if not event_name:
+            event_name, description = self._decode_event_description(description_text)
 
         # Parse ISO event_time to date and time
         event_time_str = backend_event.get("event_time", "")
@@ -843,6 +823,7 @@ class Event(commands.Cog):
             event_time = datetime.now(ZoneInfo("America/New_York")).time()
 
         return EventSchema(
+            event_id=backend_event.get("eid"),
             event_name=event_name,
             event_date=event_date,
             event_time=event_time,

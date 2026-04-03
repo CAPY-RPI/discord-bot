@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field, field_validator
 class EventSchema(BaseModel):
     """Pydantic model defining the Event schema and validation rules."""
 
+    event_id: str | None = Field(default=None, json_schema_extra={"ui_hidden": True})
+
     event_name: str = Field(title="Event Name", description="Name of the event", max_length=100)
     event_date: date = Field(
         title="Event Date",
