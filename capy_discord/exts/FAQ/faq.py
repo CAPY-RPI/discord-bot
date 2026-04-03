@@ -6,7 +6,6 @@ from discord import channel
 from discord.ext import commands
 from discord.interactions import Interaction
 
-from capy_discord.ui.embeds import info_embed
 from capy_discord.database import get_database_pool, BackendAPIError
 from capy_discord.ui.embeds import info_embed, error_embed, success_embed
   
@@ -39,23 +38,23 @@ class FAQ(commands.Cog):
             await interact.followup.send(embed=error_embed("Database Error", "Failed to save the FAQ entry."))  
     
     
-    @app_commands.commands(name="faq_read", description="Read an FAQ") #TODO: faq_read
+    @app_commands.command(name="faq_read", description="Read an FAQ") #TODO: faq_read
     async def faq_read(self, interact: Interaction, question:str) -> None:
+        await interact.response.defer(ephemeral=True)
         client = get_database_pool()
         try:
             faqs = await client.list_faqs(question=question.lower())
             faq_item = next((f for f in faqs if f["question"].lower() == question.lower()), None)
 
             if faq_item:
-                await interact.response.send_message(
-                    embed=info_embed(f"**{faq_item['question'].title()}**", description=faq_item['answer']),
-                    ephemeral=True
+                await interact.followup.send(
+                    embed=info_embed(faq_item['question'].title(), faq_item['answer'])
                 )
             else:
-                await interact.response.send_message(embed=error_embed("FAQ Not Found", "No matching FAQ entry found."), ephemeral=True)
-        except BackendAPIError as e:
+                await interact.followup.send(embed=error_embed("FAQ Not Found", "No matching FAQ entry found."))
+        except BackendAPIError:
             self.log.exception("Failed to retrieve FAQ")
-            await interact.response.send_message(embed=error_embed("Database Error", "Failed to retrieve the FAQ entry."), ephemeral=True)
+            await interact.followup.send(embed=error_embed("Database Error", "Failed to retrieve the FAQ entry."))
     
     
     @app_commands.command(name="faq_update", description="Update an FAQ") #TODO: faq_update
@@ -93,6 +92,11 @@ class FAQ(commands.Cog):
         except BackendAPIError as e:
             self.log.exception("Failed to delete FAQ")
             await interact.followup.send(embed=error_embed("Database Error", "Failed to delete the FAQ entry."))
+    
+    
+async def setup(bot: commands.Bot) -> None:
+    """Set up the FAQ cog."""
+    await bot.add_cog(FAQ(bot))
     
     
 async def setup(bot: commands.Bot) -> None:
