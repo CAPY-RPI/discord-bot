@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import discord
@@ -65,6 +65,19 @@ class ProfileService:
         except ValidationError as error:
             self.log.warning("Full profile validation failed for user %s: %s", user, error)
             raise InvalidProfileError from error
+
+    def finalize_profile(
+        self,
+        user: discord.abc.User,
+        details: UserProfileDetailsSchema,
+        profile_data: dict[str, Any],
+        action: Literal["create", "update"],
+    ) -> tuple[UserProfileSchema, Literal["created", "updated"]]:
+        """Validate and persist the final profile payload."""
+        profile = self.build_profile(user, details, profile_data)
+        self.save_profile(user, profile)
+        result = "created" if action == "create" else "updated"
+        return profile, result
 
     def get_profile(self, user_id: int) -> UserProfileSchema:
         """Fetch a saved profile or raise when missing."""

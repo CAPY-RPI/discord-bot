@@ -1,7 +1,7 @@
 import logging
 from collections.abc import Awaitable, Callable
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 
 import discord
 from discord import app_commands, ui
@@ -188,11 +188,11 @@ class Profile(commands.Cog):
         interaction: discord.Interaction,
         details: UserProfileDetailsSchema,
         profile_data: dict[str, Any],
-        action: str,
+        action: Literal["create", "update"],
     ) -> None:
         """Combine both modal steps into a validated profile."""
         try:
-            profile = self.service.build_profile(interaction.user, details, profile_data)
+            profile, result = self.service.finalize_profile(interaction.user, details, profile_data, action)
         except InvalidProfileError:
             await self._send_error(
                 interaction,
@@ -201,7 +201,7 @@ class Profile(commands.Cog):
             )
             return
 
-        await self._handle_profile_submit(interaction, profile, action)
+        await self._handle_profile_submit(interaction, profile, result)
 
     async def handle_show_action(self, interaction: discord.Interaction) -> None:
         """Logic for the 'show' choice."""
@@ -244,12 +244,14 @@ class Profile(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def _handle_profile_submit(
-        self, interaction: discord.Interaction, profile: UserProfileSchema, action: str
+        self,
+        interaction: discord.Interaction,
+        profile: UserProfileSchema,
+        result: Literal["created", "updated"],
     ) -> None:
         """Process the valid profile submission."""
-        self.service.save_profile(interaction.user, profile)
         embed = self.service.create_profile_embed(interaction.user, profile)
-        if action == "create":
+        if result == "created":
             success = success_embed("Profile Created", "Your profile has been created successfully!")
         else:
             success = success_embed("Profile Updated", "Your profile has been updated successfully!")
