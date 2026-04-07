@@ -53,67 +53,46 @@ class Sync(commands.Cog):
     @commands.command(name="sync", hidden=True)
     async def sync(self, ctx: commands.Context[commands.Bot], spec: str | None = None) -> None:
         """Sync commands manually with "!" prefix (owner only)."""
-        try:
-            if spec in [".", "guild"]:
-                if ctx.guild is None:
-                    await ctx.send("This command must be used in a guild.")
-                    return
-                # Instant sync to current guild
-                ctx.bot.tree.copy_global_to(guild=ctx.guild)
-                synced = await ctx.bot.tree.sync(guild=ctx.guild)
-                description = f"Synced {len(synced)} commands to **current guild**."
-            elif spec == "clear":
-                if ctx.guild is None:
-                    await ctx.send("This command must be used in a guild.")
-                    return
-                # Clear guild commands
-                ctx.bot.tree.clear_commands(guild=ctx.guild)
-                await ctx.bot.tree.sync(guild=ctx.guild)
-                description = "Cleared commands for **current guild**."
-            else:
-                # Global sync + debug guild sync
-                global_synced, guild_synced = await self._sync_commands()
-                description = f"Synced {len(global_synced)} commands **globally** (may take 1h)."
-                if guild_synced is not None:
-                    description += f"\nSynced {len(guild_synced)} commands to **debug guild** (instant)."
+        if spec in [".", "guild"]:
+            if ctx.guild is None:
+                await ctx.send("This command must be used in a guild.")
+                return
+            # Instant sync to current guild
+            ctx.bot.tree.copy_global_to(guild=ctx.guild)
+            synced = await ctx.bot.tree.sync(guild=ctx.guild)
+            description = f"Synced {len(synced)} commands to **current guild**."
+        elif spec == "clear":
+            if ctx.guild is None:
+                await ctx.send("This command must be used in a guild.")
+                return
+            # Clear guild commands
+            ctx.bot.tree.clear_commands(guild=ctx.guild)
+            await ctx.bot.tree.sync(guild=ctx.guild)
+            description = "Cleared commands for **current guild**."
+        else:
+            # Global sync + debug guild sync
+            global_synced, guild_synced = await self._sync_commands()
+            description = f"Synced {len(global_synced)} commands **globally** (may take 1h)."
+            if guild_synced is not None:
+                description += f"\nSynced {len(guild_synced)} commands to **debug guild** (instant)."
 
-            self.log.info("!sync invoked by %s: %s", ctx.author.id, description)
-            await ctx.send(description)
-
-        except Exception:
-            self.log.exception("!sync attempted with error")
-            await ctx.send("Sync failed. Check logs.")
+        self.log.info("!sync invoked by %s: %s", ctx.author.id, description)
+        await ctx.send(description)
 
     @app_commands.command(name="sync", description="Sync application commands")
     @app_commands.checks.has_permissions(administrator=True)
     async def sync_slash(self, interaction: discord.Interaction) -> None:
         """Sync commands via slash command."""
-        try:
-            await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
 
-            global_synced, guild_synced = await self._sync_commands()
+        global_synced, guild_synced = await self._sync_commands()
 
-            description = f"Synced {len(global_synced)} global commands: {[cmd.name for cmd in global_synced]}"
-            if guild_synced is not None:
-                description += (
-                    f"\nSynced {len(guild_synced)} debug guild commands: {[cmd.name for cmd in guild_synced]}"
-                )
+        description = f"Synced {len(global_synced)} global commands: {[cmd.name for cmd in global_synced]}"
+        if guild_synced is not None:
+            description += f"\nSynced {len(guild_synced)} debug guild commands: {[cmd.name for cmd in guild_synced]}"
 
-            self.log.info("/sync invoked user: %s guild: %s", interaction.user.id, interaction.guild_id)
-            await interaction.followup.send(description)
-
-        except Exception:
-            self.log.exception("/sync attempted user with error")
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "We're sorry, this interaction failed. Please contact an admin.",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.followup.send(
-                    "We're sorry, this interaction failed. Please contact an admin.",
-                    ephemeral=True,
-                )
+        self.log.info("/sync invoked user: %s guild: %s", interaction.user.id, interaction.guild_id)
+        await interaction.followup.send(description)
 
 
 async def setup(bot: commands.Bot) -> None:

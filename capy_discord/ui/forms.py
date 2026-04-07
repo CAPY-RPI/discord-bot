@@ -68,9 +68,15 @@ class ModelModal[T: BaseModel](BaseModal):
         self.log = logging.getLogger(__name__)
 
         # Discord Modals are limited to 5 ActionRows (items)
-        if len(self.model_cls.model_fields) > MAX_DISCORD_ROWS:
+        # Only count fields that will be displayed in the UI (not internal/hidden fields)
+        ui_field_count = sum(
+            1
+            for field_info in self.model_cls.model_fields.values()
+            if not field_info.json_schema_extra or field_info.json_schema_extra.get("ui_hidden") is not True
+        )
+        if ui_field_count > MAX_DISCORD_ROWS:
             msg = (
-                f"Model '{self.model_cls.__name__}' has {len(self.model_cls.model_fields)} fields, "
+                f"Model '{self.model_cls.__name__}' has {ui_field_count} UI fields, "
                 "but Discord modals only support a maximum of 5."
             )
             raise ValueError(msg)
@@ -81,6 +87,10 @@ class ModelModal[T: BaseModel](BaseModal):
     def _generate_fields(self, initial_data: dict[str, Any]) -> None:
         """Generate UI components from the Pydantic model fields."""
         for name, field_info in self.model_cls.model_fields.items():
+            # Skip fields marked as ui_hidden
+            if field_info.json_schema_extra and field_info.json_schema_extra.get("ui_hidden") is True:
+                continue
+
             # Determine default/initial value
             # Priority: initial_data > field default
             default_value = initial_data.get(name)
