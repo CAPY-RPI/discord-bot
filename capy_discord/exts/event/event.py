@@ -13,6 +13,7 @@ from capy_discord.database import (
     BackendAPIError,
     CreateEventRequest,
     EventResponse,
+    HTTP_STATUS_NOT_FOUND,
     UpdateEventRequest,
     get_database_pool,
 )
@@ -206,8 +207,7 @@ class Event(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
 
-        # Fetch events from backend using guild_id as org_id
-        events = await self._fetch_backend_events(str(guild_id))
+        events = await self._fetch_backend_events(self._resolve_org_id(guild_id))
 
         if not events:
             embed = error_embed("No Events", "No events found in this server.")
@@ -271,8 +271,7 @@ class Event(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # Fetch events from backend using guild_id as org_id
-        events = await self._fetch_backend_events(str(guild_id))
+        events = await self._fetch_backend_events(self._resolve_org_id(guild_id))
 
         if not events:
             embed = error_embed("No Events", "No events found in this server.")
@@ -344,8 +343,7 @@ class Event(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
 
-        # Fetch events from backend using guild_id as org_id
-        events = await self._fetch_backend_events(str(guild_id))
+        events = await self._fetch_backend_events(self._resolve_org_id(guild_id))
 
         if not events:
             embed = error_embed("No Events", f"No events found in this server to {action_name}.")
@@ -397,6 +395,15 @@ class Event(commands.Cog):
         """Format the when/where field for embeds."""
         time_str = self._format_event_time_est(event)
         return f"**When:** {time_str}\n**Where:** {event.location or 'TBD'}"
+
+    def _resolve_org_id(self, guild_id: int) -> str:
+        """Resolve backend org_id for the current guild.
+
+        Temporary testing behavior: if BACKEND_TEST_ORG_ID is configured, use it.
+        """
+        if settings.backend_test_org_id.strip():
+            return settings.backend_test_org_id.strip()
+        return str(guild_id)
 
     def _apply_event_fields(self, embed: discord.Embed, event: EventSchema) -> None:
         """Append event detail fields to an embed."""
@@ -608,7 +615,7 @@ class Event(commands.Cog):
             # Create event in backend
             client = get_database_pool()
             request_data: CreateEventRequest = {
-                "org_id": str(guild_id),
+                "org_id": self._resolve_org_id(guild_id),
                 "title": event.event_name,
                 "description": event.description,
                 "event_time": event_time_iso,
@@ -765,12 +772,31 @@ class Event(commands.Cog):
 
     async def _fetch_backend_events(self, org_id: str) -> list[EventSchema]:
         """Fetch events from the backend for the given organization."""
+        client = get_database_pool()
         try:
-            client = get_database_pool()
             backend_events = await client.list_events_by_organization(org_id)
-        except BackendAPIError:
-            self.log.exception("Failed to fetch events from backend")
-            return []
+        except BackendAPIError as exc:
+            if exc.status_code == HTTP_STATUS_NOT_FOUND:
+                # Some bot API deployments expose /organizations/{oid}/events but not /events/org/{oid}.
+                try:
+                    backend_events = await client.list_organization_events(org_id)
+                except BackendAPIError as fallback_exc:
+                    if fallback_exc.status_code == HTTP_STATUS_NOT_FOUND:
+                        # Last-resort fallback for bot APIs that only expose GET /events.
+                        try:
+                            backend_events = await client.list_events(limit=100, offset=0)
+                        except BackendAPIError:
+                            self.log.exception("Failed to fetch events from backend")
+                            return []
+                    else:
+                        self.log.exception("Failed to fetch events from backend")
+                        return []
+            else:
+                self.log.exception("Failed to fetch events from backend")
+                return []
+
+        # If org_id is available in payload, keep this guild scoped; otherwise keep fallback results.
+        backend_events = [event for event in backend_events if str(event.get("org_id", "")).strip() in {"", org_id}]
 
         events = []
         for backend_event in backend_events:
