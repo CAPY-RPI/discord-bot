@@ -9,6 +9,13 @@ from discord import app_commands, ui
 from discord.ext import commands
 
 from capy_discord.config import settings
+from capy_discord.database import (
+    BackendAPIError,
+    CreateEventRequest,
+    EventResponse,
+    UpdateEventRequest,
+    get_database_pool,
+)
 from capy_discord.ui.embeds import error_embed, success_embed
 from capy_discord.ui.forms import ModelModal
 from capy_discord.ui.views import BaseView
@@ -132,8 +139,6 @@ class Event(commands.Cog):
         self.bot = bot
         self.log = logging.getLogger(__name__)
         self.log.info("Event cog initialized")
-        # In-memory storage for demonstration.
-        self.events: dict[int, list[EventSchema]] = {}
         # Track announcement messages: guild_id -> {event_name: message_id}
         self.event_announcements: dict[int, dict[str, int]] = {}
 
@@ -199,17 +204,17 @@ class Event(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # [DB CALL]: Fetch guild events
-        events = self.events.get(guild_id, [])
+        await interaction.response.defer(ephemeral=True)
+
+        # Fetch events from backend using guild_id as org_id
+        events = await self._fetch_backend_events(str(guild_id))
 
         if not events:
             embed = error_embed("No Events", "No events found in this server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         self.log.info("Listing events for guild %s", guild_id)
-
-        await interaction.response.defer(ephemeral=True)
 
         # Separate into upcoming and past events
         now = datetime.now(ZoneInfo("UTC"))
@@ -266,8 +271,8 @@ class Event(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # [DB CALL]: Fetch guild events
-        events = self.events.get(guild_id, [])
+        # Fetch events from backend using guild_id as org_id
+        events = await self._fetch_backend_events(str(guild_id))
 
         if not events:
             embed = error_embed("No Events", "No events found in this server.")
@@ -337,17 +342,17 @@ class Event(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # [DB CALL]: Fetch guild events
-        events = self.events.get(guild_id, [])
+        await interaction.response.defer(ephemeral=True)
+
+        # Fetch events from backend using guild_id as org_id
+        events = await self._fetch_backend_events(str(guild_id))
 
         if not events:
             embed = error_embed("No Events", f"No events found in this server to {action_name}.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
 
         self.log.info("Opening event selection for %s in guild %s", action_name, guild_id)
-
-        await interaction.response.defer(ephemeral=True)
 
         view = EventDropdownView(events, self, f"Select an event to {action_name}", callback)
         await interaction.followup.send(content=f"Select an event to {action_name}:", view=view, ephemeral=True)
@@ -533,7 +538,7 @@ class Event(commands.Cog):
             await message.add_reaction("✅")  # Attending
             await message.add_reaction("❌")  # Not attending
 
-            # [DB CALL]: Store announcement message ID for RSVP tracking
+            # Store announcement message ID for RSVP tracking
             if guild.id not in self.event_announcements:
                 self.event_announcements[guild.id] = {}
             self.event_announcements[guild.id][selected_event.event_name] = message.id
@@ -557,7 +562,7 @@ class Event(commands.Cog):
             embed = error_embed("Permission Denied", "I don't have permission to send messages in that channel.")
             await interaction.followup.send(embed=embed, ephemeral=True)
         except discord.HTTPException:
-            self.log.exception("Failed to announce event")
+            self.log.exception("Announce event failed")
             embed = error_embed("Announcement Failed", "Failed to announce the event. Please try again.")
             await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -591,17 +596,43 @@ class Event(commands.Cog):
             await self._respond_from_modal(interaction, embed)
             return
 
-        # [DB CALL]: Save event
-        self.events.setdefault(guild_id, []).append(event)
+        try:
+            # Convert event to ISO format for backend
+            est = ZoneInfo("America/New_York")
+            event_datetime = datetime.combine(event.event_date, event.event_time)
+            if event_datetime.tzinfo is None:
+                event_datetime = event_datetime.replace(tzinfo=est)
+            event_time_iso = event_datetime.astimezone(ZoneInfo("UTC")).isoformat()
 
-        self.log.info("Created event '%s' for guild %s", event.event_name, guild_id)
+            # Encode event name in description
+            encoded_description = self._encode_event_description(event.event_name, event.description)
 
-        embed = success_embed("Event Created", "Your event has been created successfully!")
-        self._apply_event_fields(embed, event)
-        now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
-        embed.set_footer(text=f"Created: {now}")
+            # Create event in backend
+            client = get_database_pool()
+            request_data: CreateEventRequest = {
+                "org_id": str(guild_id),
+                "description": encoded_description,
+                "event_time": event_time_iso,
+                "location": event.location,
+            }
+            await client.create_event(request_data)
 
-        await self._respond_from_modal(interaction, embed)
+            self.log.info("Created event '%s' for guild %s", event.event_name, guild_id)
+
+            embed = success_embed("Event Created", "Your event has been created successfully!")
+            self._apply_event_fields(embed, event)
+            now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
+            embed.set_footer(text=f"Created: {now}")
+
+            await self._respond_from_modal(interaction, embed)
+        except BackendAPIError:
+            self.log.exception("Failed to create event")
+            embed = error_embed("Failed to Create Event", "An error occurred while creating the event.")
+            await self._respond_from_modal(interaction, embed)
+        except ValueError as e:
+            self.log.exception("Invalid event data")
+            embed = error_embed("Invalid Event Data", str(e))
+            await self._respond_from_modal(interaction, embed)
 
     def _create_event_embed(self, title: str, description: str, event: EventSchema) -> discord.Embed:
         """Helper to build a success-styled event display embed."""
@@ -635,23 +666,62 @@ class Event(commands.Cog):
             await self._respond_from_modal(interaction, embed)
             return
 
-        # [DB CALL]: Update event
-        guild_events = self.events.setdefault(guild_id, [])
-        if original_event in guild_events:
-            idx = guild_events.index(original_event)
-            guild_events[idx] = updated_event
+        try:
+            # Convert event to ISO format for backend
+            est = ZoneInfo("America/New_York")
+            event_datetime = datetime.combine(updated_event.event_date, updated_event.event_time)
+            if event_datetime.tzinfo is None:
+                event_datetime = event_datetime.replace(tzinfo=est)
+            event_time_iso = event_datetime.astimezone(ZoneInfo("UTC")).isoformat()
 
-        self.log.info("Updated event '%s' for guild %s", updated_event.event_name, guild_id)
+            # Encode event name in description
+            encoded_description = self._encode_event_description(updated_event.event_name, updated_event.description)
 
-        embed = self._create_event_embed(
-            "Event Updated",
-            "Your event has been updated successfully!",
-            updated_event,
-        )
-        now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
-        embed.set_footer(text=f"Updated: {now}")
+            # For now, we need to find the event ID from the backend
+            # We'll search for events matching the original event name
+            client = get_database_pool()
+            backend_events = await client.list_events_by_organization(str(guild_id))
 
-        await self._respond_from_modal(interaction, embed)
+            event_id = None
+            for be in backend_events:
+                desc = be.get("description", "")
+                name, _ = self._decode_event_description(desc)
+                if name == original_event.event_name:
+                    event_id = be.get("eid")
+                    break
+
+            if not event_id:
+                embed = error_embed("Event Not Found", "Could not find the event to update.")
+                await self._respond_from_modal(interaction, embed)
+                return
+
+            # Update event in backend
+            request_data: UpdateEventRequest = {
+                "description": encoded_description,
+                "event_time": event_time_iso,
+                "location": updated_event.location,
+            }
+            await client.update_event(event_id, request_data)
+
+            self.log.info("Updated event '%s' for guild %s", updated_event.event_name, guild_id)
+
+            embed = self._create_event_embed(
+                "Event Updated",
+                "Your event has been updated successfully!",
+                updated_event,
+            )
+            now = datetime.now(ZoneInfo("UTC")).strftime("%Y-%m-%d %H:%M")
+            embed.set_footer(text=f"Updated: {now}")
+
+            await self._respond_from_modal(interaction, embed)
+        except BackendAPIError:
+            self.log.exception("Failed to update event")
+            embed = error_embed("Failed to Update Event", "An error occurred while updating the event.")
+            await self._respond_from_modal(interaction, embed)
+        except ValueError as e:
+            self.log.exception("Invalid event data")
+            embed = error_embed("Invalid Event Data", str(e))
+            await self._respond_from_modal(interaction, embed)
 
     async def _on_show_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
         """Handle event selection for showing details."""
@@ -675,22 +745,110 @@ class Event(commands.Cog):
         await view.wait()
 
         if view.value is True:
-            # [DB CALL]: Delete event from guild
-            guild_id = interaction.guild_id
-            if guild_id:
-                guild_events = self.events.setdefault(guild_id, [])
-                if selected_event in guild_events:
-                    guild_events.remove(selected_event)
+            try:
+                # Find and delete event from backend
+                guild_id = interaction.guild_id
+                if not guild_id:
+                    success = error_embed("Error", "Could not determine server.")
+                    await interaction.followup.send(embed=success, ephemeral=True)
+                    return
+
+                client = get_database_pool()
+                backend_events = await client.list_events_by_organization(str(guild_id))
+
+                event_id = None
+                for be in backend_events:
+                    desc = be.get("description", "")
+                    name, _ = self._decode_event_description(desc)
+                    if name == selected_event.event_name:
+                        event_id = be.get("eid")
+                        break
+
+                if event_id:
+                    await client.delete_event(event_id)
                     self.log.info("Deleted event '%s' from guild %s", selected_event.event_name, guild_id)
 
-            success = success_embed("Event Deleted", "The event has been deleted successfully!")
-            await interaction.followup.send(embed=success, ephemeral=True)
+                success = success_embed("Event Deleted", "The event has been deleted successfully!")
+                await interaction.followup.send(embed=success, ephemeral=True)
+            except BackendAPIError:
+                self.log.exception("Failed to delete event")
+                error = error_embed("Failed to Delete", "An error occurred while deleting the event.")
+                await interaction.followup.send(embed=error, ephemeral=True)
         elif view.value is None:
             timeout_embed = error_embed(
                 "Deletion Timed Out",
                 "No confirmation was received in time. The event was not deleted.",
             )
             await interaction.followup.send(embed=timeout_embed, ephemeral=True)
+
+    async def _fetch_backend_events(self, org_id: str) -> list[EventSchema]:
+        """Fetch events from the backend for the given organization."""
+        try:
+            client = get_database_pool()
+            backend_events = await client.list_events_by_organization(org_id)
+        except BackendAPIError:
+            self.log.exception("Failed to fetch events from backend")
+            return []
+
+        events = []
+        for backend_event in backend_events:
+            try:
+                event = self._from_backend_event(backend_event)
+                events.append(event)
+            except ValueError as e:
+                self.log.warning(f"Failed to convert backend event: {e}")
+
+        # Sort by event datetime
+        events.sort(key=self._event_datetime)
+        return events
+
+    @staticmethod
+    def _encode_event_description(event_name: str, description: str) -> str:
+        """Encode event_name into the description since backend doesn't have this field."""
+        return f"[capy_event_name]{event_name}\n{description}"
+
+    @staticmethod
+    def _decode_event_description(encoded: str) -> tuple[str, str]:
+        """Decode event_name and description from encoded string."""
+        if encoded.startswith("[capy_event_name]"):
+            # Find the end of the event name marker
+            remainder = encoded[len("[capy_event_name]") :]
+            if "\n" in remainder:
+                event_name, description = remainder.split("\n", 1)
+                return event_name, description
+            return remainder, ""
+        return "Unknown Event", encoded
+
+    def _from_backend_event(self, backend_event: EventResponse) -> EventSchema:
+        """Convert a backend event response to EventSchema."""
+        # Decode the event name from description
+        description_text = backend_event.get("description", "")
+        event_name, description = self._decode_event_description(description_text)
+
+        # Parse ISO event_time to date and time
+        event_time_str = backend_event.get("event_time", "")
+        if event_time_str:
+            try:
+                # Parse ISO format: 2024-01-15T14:30:00Z or similar
+                parsed_dt = datetime.fromisoformat(event_time_str.replace("Z", "+00:00"))
+                # Convert to local EST
+                est_dt = parsed_dt.astimezone(ZoneInfo("America/New_York"))
+                event_date = est_dt.date()
+                event_time = est_dt.time()
+            except ValueError as e:
+                msg = f"Invalid event_time format: {event_time_str}"
+                raise ValueError(msg) from e
+        else:
+            event_date = datetime.now(ZoneInfo("America/New_York")).date()
+            event_time = datetime.now(ZoneInfo("America/New_York")).time()
+
+        return EventSchema(
+            event_name=event_name,
+            event_date=event_date,
+            event_time=event_time,
+            location=backend_event.get("location", ""),
+            description=description,
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

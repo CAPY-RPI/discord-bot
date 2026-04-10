@@ -10,6 +10,7 @@ license = { text = "MIT" }
 requires-python = "==3.13.*"
 dependencies = [
     "discord-py>=2.6.4",
+    "httpx>=0.28.1",
     "pydantic-settings>=2.12.0",
     "tzdata>=2025.3; sys_platform == 'win32'",
 ]
@@ -115,3 +116,8 @@ convention = "google"
 
 [tool.ruff.lint.mccabe]
 max-complexity = 10
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: requires a locally running backend API and explicit opt-in",
+]

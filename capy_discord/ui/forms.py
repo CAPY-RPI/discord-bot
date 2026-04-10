@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
 import discord
@@ -22,7 +22,7 @@ class RetryView[T: BaseModel](ui.View):
     def __init__(
         self,
         model_cls: type[T],
-        callback: Callable[[discord.Interaction, T], Any],
+        callback: Callable[[discord.Interaction, T], Awaitable[Any]],
         title: str,
         initial_data: dict[str, Any],
     ) -> None:
@@ -48,7 +48,7 @@ class ModelModal[T: BaseModel](BaseModal):
     def __init__(
         self,
         model_cls: type[T],
-        callback: Callable[[discord.Interaction, T], Any],
+        callback: Callable[[discord.Interaction, T], Awaitable[Any]],
         title: str,
         initial_data: dict[str, Any] | None = None,
         timeout: float | None = None,
