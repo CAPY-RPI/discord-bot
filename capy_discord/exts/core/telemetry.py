@@ -30,13 +30,21 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from capy_discord.config import settings
 from capy_discord.errors import UserFriendlyError
+
+try:
+    _BOT_VERSION = version("capy-discord")
+except PackageNotFoundError:
+    _BOT_VERSION = "unknown"
 
 # Discord component type constants
 COMPONENT_TYPE_BUTTON = 2
@@ -133,20 +141,36 @@ class Telemetry(commands.Cog):
         self._pending: dict[int, tuple[str, float]] = {}
         self._queue: asyncio.Queue[TelemetryEvent] = asyncio.Queue(maxsize=_QUEUE_MAX_SIZE)
         self._metrics = TelemetryMetrics()
-        self.log.info("Telemetry cog initialized - Phase 2b: In-memory analytics")
+        self._http_session: aiohttp.ClientSession | None = None
+        self._api_url = settings.telemetry_api_url
+        self.log.info("Telemetry cog initialized - Phase 3: HTTP flush enabled")
 
     # ========================================================================================
     # LIFECYCLE
     # ========================================================================================
 
     async def cog_load(self) -> None:
-        """Start the background consumer task."""
+        """Start the background consumer task and probe the telemetry API."""
+        self._http_session = aiohttp.ClientSession()
+        try:
+            async with self._http_session.get(
+                f"{self._api_url}/health",
+                timeout=aiohttp.ClientTimeout(total=5.0),
+            ) as r:
+                if r.status == 200:  # noqa: PLR2004
+                    self.log.info("Telemetry API reachable at startup")
+                else:
+                    self.log.warning("Telemetry API returned HTTP %s at startup — will keep retrying", r.status)
+        except Exception as exc:
+            self.log.warning("Telemetry API unreachable at startup — will keep retrying: %s", exc)
         self._consumer_task.start()
 
     async def cog_unload(self) -> None:
-        """Stop the consumer and flush remaining events."""
+        """Stop the consumer, flush remaining events, and close the HTTP session."""
         self._consumer_task.cancel()
         self._drain_queue()
+        if self._http_session:
+            await self._http_session.close()
 
     # ========================================================================================
     # BACKGROUND CONSUMER
@@ -155,14 +179,15 @@ class Telemetry(commands.Cog):
     @tasks.loop(seconds=_CONSUMER_INTERVAL_SECONDS)
     async def _consumer_task(self) -> None:
         """Periodically drain the queue and process pending telemetry events."""
-        self._process_pending_events()
+        await self._process_pending_events()
 
     @_consumer_task.before_loop
     async def _before_consumer(self) -> None:
         await self.bot.wait_until_ready()
 
-    def _process_pending_events(self) -> None:
-        """Drain the queue and dispatch each event. Capped at _QUEUE_MAX_SIZE per tick."""
+    async def _process_pending_events(self) -> None:
+        """Drain the queue, dispatch in-memory metrics, and HTTP flush."""
+        batch: list[dict] = []
         processed = 0
         while processed < _QUEUE_MAX_SIZE:
             try:
@@ -170,7 +195,27 @@ class Telemetry(commands.Cog):
             except asyncio.QueueEmpty:
                 break
             self._dispatch_event(event)
+            batch.append(event.data)
             processed += 1
+
+        if batch:
+            await self._post_batch(batch)
+
+    async def _post_batch(self, events: list[dict]) -> None:
+        """POST events to the API gateway. Never raises — errors are logged only."""
+        if not self._http_session:
+            return
+        try:
+            payload = {"events": events}
+            async with self._http_session.post(
+                f"{self._api_url}/api/v1/telemetry/batch",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=5.0),
+            ) as resp:
+                if resp.status not in (200, 202):
+                    self.log.warning("Telemetry batch rejected: HTTP %s", resp.status)
+        except Exception as exc:
+            self.log.warning("Telemetry flush failed: %s", exc)
 
     def _drain_queue(self) -> None:
         """Flush remaining events on unload. Warns if any events were pending."""
@@ -232,6 +277,10 @@ class Telemetry(commands.Cog):
             interaction: The Discord interaction object
         """
         try:
+            # Filter out autocomplete events — not meaningful interactions
+            if interaction.type == discord.InteractionType.autocomplete:
+                return
+
             # Clean up stale entries that never got a completion/failure
             self._cleanup_stale_entries()
 
@@ -273,7 +322,9 @@ class Telemetry(commands.Cog):
                 TelemetryEvent(
                     "completion",
                     {
+                        "type": "completion",
                         "correlation_id": correlation_id,
+                        "timestamp": datetime.now(UTC).isoformat(),
                         "command_name": command.name,
                         "status": "success",
                         "duration_ms": duration_ms,
@@ -318,7 +369,9 @@ class Telemetry(commands.Cog):
                 TelemetryEvent(
                     "completion",
                     {
+                        "type": "completion",
                         "correlation_id": correlation_id,
+                        "timestamp": datetime.now(UTC).isoformat(),
                         "command_name": interaction.command.name if interaction.command else "unknown",
                         "status": status,
                         "duration_ms": duration_ms,
@@ -400,16 +453,16 @@ class Telemetry(commands.Cog):
         options = self._extract_interaction_options(interaction)
 
         return {
-            "event_type": "interaction",
+            "type": "interaction",
             "interaction_type": interaction_type,
             "user_id": interaction.user.id,
-            "username": str(interaction.user),
             "command_name": command_name,
             "guild_id": interaction.guild_id,
             "guild_name": interaction.guild.name if interaction.guild else None,
             "channel_id": interaction.channel_id,
-            "timestamp": interaction.created_at,
+            "timestamp": interaction.created_at.isoformat(),
             "options": options,
+            "bot_version": _BOT_VERSION,
         }
 
     # ========================================================================================
@@ -484,11 +537,7 @@ class Telemetry(commands.Cog):
         """
         if interaction.command:
             return interaction.command.name
-
-        if interaction.data:
-            return interaction.data.get("custom_id")
-
-        return None
+        return None  # buttons/modals: custom_id stays in options only
 
     def _extract_interaction_options(self, interaction: discord.Interaction) -> dict[str, Any]:
         """Extract options/parameters from an interaction.
@@ -555,7 +604,10 @@ class Telemetry(commands.Cog):
                 if field_id and field_value is not None:
                     options[field_id] = field_value
 
-    def _serialize_value(self, value: Any) -> Any:  # noqa: ANN401
+    type JsonPrimitive = str | int | float | bool | None
+    type JsonValue = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
+
+    def _serialize_value(self, value: object) -> JsonValue:
         """Convert complex Discord objects to simple serializable types.
 
         Args:
@@ -577,9 +629,9 @@ class Telemetry(commands.Cog):
             return [self._serialize_value(v) for v in value]
 
         if isinstance(value, dict):
-            return {k: self._serialize_value(v) for k, v in value.items()}
+            return {str(k): self._serialize_value(v) for k, v in value.items()}
 
-        return value
+        return str(value)
 
     # ========================================================================================
     # LOGGING METHODS
@@ -594,21 +646,19 @@ class Telemetry(commands.Cog):
         Args:
             event_data: Structured event data dict
         """
-        timestamp = event_data["timestamp"].strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = event_data["timestamp"]
         correlation_id = event_data["correlation_id"]
         interaction_type = event_data["interaction_type"]
         command_name = event_data.get("command_name", "N/A")
-        username = event_data.get("username", "Unknown")
         user_id = event_data["user_id"]
         guild_name = event_data.get("guild_name") or "DM"
         options = event_data.get("options", {})
 
         self.log.debug(
-            "[TELEMETRY] Interaction | ID=%s | Type=%s | Command=%s | User=%s(%s) | Guild=%s | Options=%s | Time=%s",
+            "[TELEMETRY] Interaction | ID=%s | Type=%s | Command=%s | User=%s | Guild=%s | Options=%s | Time=%s",
             correlation_id,
             interaction_type,
             command_name,
-            username,
             user_id,
             guild_name,
             options,
@@ -623,6 +673,7 @@ class Telemetry(commands.Cog):
         status: str,
         duration_ms: float,
         error_type: str | None = None,
+        **_: object,  # absorb extra keys added for HTTP payload (type, timestamp)
     ) -> None:
         """Log a slim completion/failure record at DEBUG level.
 
