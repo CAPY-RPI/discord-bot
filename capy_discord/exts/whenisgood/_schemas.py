@@ -4,6 +4,27 @@ MIN_POLL_SLOTS = 2
 MAX_POLL_SLOTS = 25
 
 
+class WhenIsGoodCalendarSchema(BaseModel):
+    """Schema for starting the calendar-based poll builder."""
+
+    title: str = Field(title="Poll Title", description="Short name for the availability poll", max_length=100)
+    description: str = Field(
+        title="Description",
+        description="Optional context or instructions for voters",
+        default="",
+        max_length=500,
+    )
+
+    @field_validator("title")
+    @classmethod
+    def _validate_title(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            msg = "Poll title cannot be empty."
+            raise ValueError(msg)
+        return value
+
+
 class WhenIsGoodPollSchema(BaseModel):
     """Schema for creating a lightweight availability poll."""
 

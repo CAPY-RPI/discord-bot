@@ -8,9 +8,14 @@ from discord.ext import commands
 from capy_discord.ui.embeds import error_embed, success_embed
 from capy_discord.ui.forms import ModelModal
 
-from ._schemas import WhenIsGoodPollSchema
+from ._schemas import WhenIsGoodCalendarSchema, WhenIsGoodPollSchema
 from ._service import AvailabilityPoll, WhenIsGoodService
-from ._views import AvailabilityVoteView, PollPickerView
+from ._views import (
+    AvailabilityVoteView,
+    CalendarPollBuilderView,
+    PollPickerView,
+    WeeklyPollBuilderView,
+)
 
 
 class WhenIsGood(commands.Cog):
@@ -29,6 +34,8 @@ class WhenIsGood(commands.Cog):
     )
     @app_commands.choices(
         action=[
+            app_commands.Choice(name="calendar", value="calendar"),
+            app_commands.Choice(name="weekly", value="weekly"),
             app_commands.Choice(name="create", value="create"),
             app_commands.Choice(name="vote", value="vote"),
             app_commands.Choice(name="results", value="results"),
@@ -36,12 +43,48 @@ class WhenIsGood(commands.Cog):
     )
     async def whenisgood(self, interaction: discord.Interaction, action: str, poll_id: str | None = None) -> None:
         """Handle availability poll actions."""
-        if action == "create":
+        if action == "calendar":
+            await self.handle_calendar_action(interaction)
+        elif action == "weekly":
+            await self.handle_weekly_action(interaction)
+        elif action == "create":
             await self.handle_create_action(interaction)
         elif action == "vote":
             await self.handle_vote_action(interaction, poll_id)
         elif action == "results":
             await self.handle_results_action(interaction, poll_id)
+
+    async def handle_calendar_action(self, interaction: discord.Interaction) -> None:
+        """Open the calendar-based poll builder modal."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message(
+                embed=error_embed("No Server", "Availability polls must be created in a server."),
+                ephemeral=True,
+            )
+            return
+
+        modal = ModelModal(
+            model_cls=WhenIsGoodCalendarSchema,
+            callback=self._handle_calendar_submit,
+            title="Start Calendar Poll",
+        )
+        await interaction.response.send_modal(modal)
+
+    async def handle_weekly_action(self, interaction: discord.Interaction) -> None:
+        """Open the weekly grid poll builder modal (Mon-Sun times)."""
+        if interaction.guild_id is None:
+            await interaction.response.send_message(
+                embed=error_embed("No Server", "Availability polls must be created in a server."),
+                ephemeral=True,
+            )
+            return
+
+        modal = ModelModal(
+            model_cls=WhenIsGoodCalendarSchema,
+            callback=self._handle_weekly_submit,
+            title="Start Weekly Poll",
+        )
+        await interaction.response.send_modal(modal)
 
     async def handle_create_action(self, interaction: discord.Interaction) -> None:
         """Open the poll creation modal."""
@@ -122,6 +165,60 @@ class WhenIsGood(commands.Cog):
                 ),
                 self.service.build_poll_embed(poll),
             ],
+            ephemeral=True,
+        )
+
+    async def _handle_calendar_submit(
+        self,
+        interaction: discord.Interaction,
+        poll_data: WhenIsGoodCalendarSchema,
+    ) -> None:
+        """Open the pseudo-calendar builder after collecting poll metadata."""
+        guild_id = interaction.guild_id
+        if guild_id is None:
+            await interaction.response.send_message(
+                embed=error_embed("No Server", "Availability polls must be created in a server."),
+                ephemeral=True,
+            )
+            return
+
+        view = CalendarPollBuilderView(
+            service=self.service,
+            guild_id=guild_id,
+            creator_id=interaction.user.id,
+            title=poll_data.title,
+            description=poll_data.description,
+        )
+        await view.reply(
+            interaction,
+            embed=view.build_embed(),
+            ephemeral=True,
+        )
+
+    async def _handle_weekly_submit(
+        self,
+        interaction: discord.Interaction,
+        poll_data: WhenIsGoodCalendarSchema,
+    ) -> None:
+        """Open the weekly builder after collecting poll metadata."""
+        guild_id = interaction.guild_id
+        if guild_id is None:
+            await interaction.response.send_message(
+                embed=error_embed("No Server", "Availability polls must be created in a server."),
+                ephemeral=True,
+            )
+            return
+
+        view = WeeklyPollBuilderView(
+            service=self.service,
+            guild_id=guild_id,
+            creator_id=interaction.user.id,
+            title=poll_data.title,
+            description=poll_data.description,
+        )
+        await view.reply(
+            interaction,
+            embed=view.build_embed(),
             ephemeral=True,
         )
 
