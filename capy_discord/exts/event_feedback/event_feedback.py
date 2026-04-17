@@ -2,12 +2,15 @@
 
 Sends a DM rating survey (1-10) to every guild member after an event.
 After selecting a rating, members can optionally submit written feedback or skip.
-All responses are stored in-memory (see [DB CALL] comments for future persistence).
+All responses are persisted to PostgreSQL via _queries.py.
 """
+
+from __future__ import annotations
 
 import contextlib
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import discord
@@ -15,11 +18,15 @@ from discord import app_commands, ui
 from discord.ext import commands
 
 from capy_discord.config import settings
+
+if TYPE_CHECKING:
+    from capy_discord.bot import Bot
 from capy_discord.services.dm import DirectMessenger, Policy
 from capy_discord.ui.modal import BaseModal
 from capy_discord.ui.views import BaseView
 
-from ._schemas import EventFeedbackSchema
+from . import _queries
+from ._schemas import EventFeedbackSchema, FeedbackRecord
 
 # Ratings at or above this threshold are considered positive and skip the follow-up question.
 _POSITIVE_THRESHOLD = 6
@@ -45,10 +52,10 @@ class ImprovementModal(BaseModal):
 
     def __init__(
         self,
-        cog: "EventFeedback",
+        cog: EventFeedback,
         rating: int,
         dm_message: discord.Message | None,
-        prompt_view: "ImprovementPromptView | None" = None,
+        prompt_view: ImprovementPromptView | None = None,
     ) -> None:
         """Initialize the ImprovementModal.
 
@@ -114,7 +121,7 @@ class RatingRangeButton(ui.Button["RatingView"]):
         await interaction.response.edit_message(view=prompt_view)
 
     @property
-    def cog(self) -> "EventFeedback":
+    def cog(self) -> EventFeedback:
         """Return the parent cog through the view reference."""
         view: RatingView = self.view  # type: ignore[assignment]
         return view.cog
@@ -123,7 +130,7 @@ class RatingRangeButton(ui.Button["RatingView"]):
 class RatingView(BaseView):
     """View containing three rating range buttons sent in a DM."""
 
-    def __init__(self, cog: "EventFeedback") -> None:
+    def __init__(self, cog: EventFeedback) -> None:
         """Initialize the RatingView with three rating range buttons."""
         super().__init__(timeout=600)  # 10-minute window for the user to respond
         self.cog = cog
@@ -190,7 +197,7 @@ class SkipImprovementButton(ui.Button["ImprovementPromptView"]):
 class ImprovementPromptView(BaseView):
     """View shown after low ratings with Write Feedback and Skip options."""
 
-    def __init__(self, cog: "EventFeedback", rating: int, dm_message: discord.Message | None) -> None:
+    def __init__(self, cog: EventFeedback, rating: int, dm_message: discord.Message | None) -> None:
         """Initialize the improvement prompt view."""
         super().__init__(timeout=600)
         self.cog = cog
@@ -231,7 +238,7 @@ class EventSelect(ui.Select["EventSelectView"]):
 class EventSelectView(BaseView):
     """View containing the event select menu."""
 
-    def __init__(self, cog: "EventFeedback") -> None:
+    def __init__(self, cog: EventFeedback) -> None:
         """Initialize the EventSelectView."""
         super().__init__(timeout=300)
         self.cog = cog
@@ -263,7 +270,7 @@ class ViewEventSelect(ui.Select["ViewEventSelectView"]):
 class ViewEventSelectView(BaseView):
     """View containing the view event select menu."""
 
-    def __init__(self, cog: "EventFeedback") -> None:
+    def __init__(self, cog: EventFeedback) -> None:
         """Initialize the ViewEventSelectView."""
         super().__init__(timeout=300)
         self.cog = cog
@@ -278,18 +285,15 @@ class ViewEventSelectView(BaseView):
 class EventFeedback(commands.Cog):
     """Collect post-event feedback from all guild members via DM."""
 
-    def __init__(self, bot: commands.Bot) -> None:
+    def __init__(self, bot: Bot) -> None:
         """Initialize the EventFeedback cog."""
         self.bot = bot
         self.log = logging.getLogger(__name__)
         self.dm_service = DirectMessenger()  # Initialize the DM service
-        # [DB CALL]: Replace with actual DB storage in production.
-        # feedback_data[guild_id][event_name][user_id] = EventFeedbackSchema(...)
-        self.feedback_data: dict[int, dict[str, dict[int, EventFeedbackSchema]]] = {}
-        # Tracks which guild/event a DM feedback response belongs to.
+        # Tracks which guild/event a DM feedback response belongs to (cleared after save).
         self.pending_feedback_context_by_user: dict[int, tuple[int, str]] = {}
-        # Snapshot display names at send-time for easier reporting.
-        self.feedback_user_display_names: dict[int, dict[int, str]] = {}
+        # Snapshot display names at send-time so they can be written to the DB on save.
+        self.pending_display_names: dict[int, str] = {}
 
     async def send_feedback_dm(self, guild: discord.Guild, member: discord.Member, content: str) -> None:
         """Send a feedback DM to a single guild member."""
@@ -309,15 +313,6 @@ class EventFeedback(commands.Cog):
         """Send feedback DMs to a list of guild members."""
         for member in members:
             await self.send_feedback_dm(guild, member, content)
-
-    def _ensure_feedback_stores(self, guild_id: int, event_name: str) -> None:
-        """Initialize nested in-memory stores for guild/event feedback."""
-        if guild_id not in self.feedback_data:
-            self.feedback_data[guild_id] = {}
-        if event_name not in self.feedback_data[guild_id]:
-            self.feedback_data[guild_id][event_name] = {}
-        if guild_id not in self.feedback_user_display_names:
-            self.feedback_user_display_names[guild_id] = {}
 
     def _default_event_name(self) -> str:
         """Build a default event label for feedback batches."""
@@ -378,7 +373,6 @@ class EventFeedback(commands.Cog):
             await interaction.followup.send("This command must be used inside a server.", ephemeral=True)
             return
 
-        self._ensure_feedback_stores(guild.id, event_name)
         members = await self._resolve_target_members(interaction, guild)
         if members is None:
             return
@@ -399,7 +393,7 @@ class EventFeedback(commands.Cog):
                 # Store the message reference so the view can update it later.
                 view.dm_message = msg
                 self.pending_feedback_context_by_user[member.id] = (guild.id, event_name)
-                self.feedback_user_display_names[guild.id][member.id] = member.display_name
+                self.pending_display_names[member.id] = member.display_name
                 sent += 1
             except discord.Forbidden:
                 self.log.warning("Could not DM member %s (DMs disabled or bot blocked)", member.id)
@@ -436,7 +430,7 @@ class EventFeedback(commands.Cog):
 
     def _build_event_feedback_details(
         self,
-        event_feedback: dict[int, EventFeedbackSchema],
+        event_feedback: dict[int, tuple[EventFeedbackSchema, str | None]],
     ) -> tuple[list[str], int, int, int, int]:
         """Build per-response detail lines and aggregate counters."""
         lines: list[str] = []
@@ -445,7 +439,7 @@ class EventFeedback(commands.Cog):
         amazing_count = 0
         written_feedback_count = 0
 
-        for person_counter, feedback in enumerate(event_feedback.values(), start=1):
+        for person_counter, (feedback, _display_name) in enumerate(event_feedback.values(), start=1):
             display_name = f"Response {person_counter}"
             suggestion = feedback.improvement_suggestion or "(No written feedback)"
             rating_label = self._rating_to_label(feedback.rating)
@@ -515,7 +509,7 @@ class EventFeedback(commands.Cog):
         if guild is None:
             return []
 
-        event_names = sorted(self.feedback_data.get(guild.id, {}).keys())
+        event_names = await _queries.list_event_names(self.bot.pg_pool, guild_id=guild.id)
         current_lower = current.lower().strip()
         if current_lower:
             event_names = [name for name in event_names if current_lower in name.lower()]
@@ -529,14 +523,13 @@ class EventFeedback(commands.Cog):
             await interaction.response.send_message("This command must be used inside a server.", ephemeral=True)
             return
 
-        guild_feedback = self.feedback_data.get(guild.id, {})
-        if not guild_feedback or event_name not in guild_feedback:
+        event_feedback = await _queries.get_feedback(self.bot.pg_pool, guild_id=guild.id, event_name=event_name)
+        if not event_feedback:
             await interaction.response.send_message(
                 f"No feedback has been submitted for **{event_name}**.", ephemeral=True
             )
             return
 
-        event_feedback = guild_feedback[event_name]
         lines, poor_count, average_count, amazing_count, written_feedback_count = self._build_event_feedback_details(
             event_feedback,
         )
@@ -604,18 +597,21 @@ class EventFeedback(commands.Cog):
             return
 
         guild_id, event_name = context
+        display_name = self.pending_display_names.pop(user_id, None)
 
-        if guild_id not in self.feedback_data:
-            self.feedback_data[guild_id] = {}
-        if event_name not in self.feedback_data[guild_id]:
-            self.feedback_data[guild_id][event_name] = {}
-
-        # [DB CALL]: Upsert a feedback record keyed by (guild_id, event_name, user_id).
-        self.feedback_data[guild_id][event_name][user_id] = EventFeedbackSchema(
-            rating=rating,
-            improvement_suggestion=suggestion,
-            anonymous=True,
+        await _queries.save_feedback(
+            self.bot.pg_pool,
+            FeedbackRecord(
+                guild_id=guild_id,
+                event_name=event_name,
+                user_id=user_id,
+                display_name=display_name,
+                rating=rating,
+                improvement_suggestion=suggestion,
+                anonymous=True,
+            ),
         )
+        del self.pending_feedback_context_by_user[user_id]
 
         self.log.info(
             "Feedback saved - guild=%s event='%s' user=%s rating=%s suggestion_provided=%s anonymous=%s",
@@ -642,6 +638,6 @@ class EventFeedback(commands.Cog):
             await interaction.followup.send(message)
 
 
-async def setup(bot: commands.Bot) -> None:
+async def setup(bot: Bot) -> None:
     """Set up the EventFeedback cog."""
     await bot.add_cog(EventFeedback(bot))

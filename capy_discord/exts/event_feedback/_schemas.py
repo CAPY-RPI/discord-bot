@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from pydantic import BaseModel, Field
 
 
@@ -16,3 +18,16 @@ class EventFeedbackSchema(BaseModel):
         description="Whether this feedback should be shown anonymously in admin views.",
         default=False,
     )
+
+
+@dataclass
+class FeedbackRecord:
+    """Bundles all fields needed to save a feedback row to the database."""
+
+    guild_id: int
+    event_name: str
+    user_id: int
+    display_name: str | None
+    rating: int
+    improvement_suggestion: str | None
+    anonymous: bool

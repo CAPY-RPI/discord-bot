@@ -1,5 +1,6 @@
 import logging
 
+import asyncpg
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -14,6 +15,8 @@ from capy_discord.utils import EXTENSIONS
 
 class Bot(commands.AutoShardedBot):
     """Bot class for Capy Discord."""
+
+    pg_pool: asyncpg.Pool
 
     def _format_missing_permissions(self, permissions: list[str]) -> str:
         """Convert Discord permission names into readable labels."""
@@ -68,6 +71,8 @@ class Bot(commands.AutoShardedBot):
     async def setup_hook(self) -> None:
         """Run before the bot starts."""
         self.log = logging.getLogger(__name__)
+        self.pg_pool = await asyncpg.create_pool(settings.database_url)
+        self.log.info("PostgreSQL pool initialized: %s", settings.database_url)
         await init_database_pool(
             settings.backend_api_base_url,
             config=BackendClientConfig(
@@ -84,6 +89,7 @@ class Bot(commands.AutoShardedBot):
 
     async def close(self) -> None:
         """Close bot resources before shutting down."""
+        await self.pg_pool.close()
         await close_database_pool()
         await super().close()
 

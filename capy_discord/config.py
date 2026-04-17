@@ -41,6 +41,9 @@ class Settings(EnvConfig):
     # Testing
     test_user_id: int | None = None
 
+    # Database
+    database_url: str = "postgresql://localhost/capy_db"
+
     @property
     def backend_api_base_url(self) -> str:
         """Resolve backend API base URL from selected environment."""
