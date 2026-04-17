@@ -11,12 +11,9 @@ from capy_discord.ui.views import BaseView
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-
-    from discord.ext import commands
-
-    from ._service import MeetingEvent, WhenIsGoodService
     from typing import Protocol
 
+    from ._service import MeetingEvent, WhenIsGoodService
 
     class WhenIsGoodCogProto(Protocol):
         async def open_name_modal(self, interaction: discord.Interaction, event_id: str) -> None:  # type: ignore[misc]
@@ -33,6 +30,7 @@ if TYPE_CHECKING:
 
         async def open_finalize_view(self, interaction: discord.Interaction, event_id: str) -> None:  # type: ignore[misc]
             ...
+
 
 MAX_EVENT_SELECT_OPTIONS = 25
 
@@ -59,7 +57,7 @@ class ParticipantNameModal(CallbackModal):
 class EventActionView(BaseView):
     """Public event message view with the main participant actions."""
 
-    def __init__(self, cog: "WhenIsGoodCogProto", event_id: str) -> None:
+    def __init__(self, cog: WhenIsGoodCogProto, event_id: str) -> None:
         """Initialize the shared event action view."""
         super().__init__(timeout=None)
         self.cog = cog

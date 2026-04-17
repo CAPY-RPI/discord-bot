@@ -1,289 +1,424 @@
+from __future__ import annotations
+
 import logging
-from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from capy_discord.ui.embeds import error_embed, success_embed
+from capy_discord.ui.embeds import error_embed, info_embed, success_embed
 from capy_discord.ui.forms import ModelModal
 
-from ._schemas import WhenIsGoodCalendarSchema, WhenIsGoodPollSchema
-from ._service import AvailabilityPoll, WhenIsGoodService
+from ._schemas import CreateMeetingSchema
+from ._service import MeetingEvent, WhenIsGoodService
 from ._views import (
-    AvailabilityVoteView,
-    CalendarPollBuilderView,
-    PollPickerView,
-    WeeklyPollBuilderView,
+    AvailabilityEditorView,
+    EventActionView,
+    EventPickerView,
+    FinalizeView,
+    ParticipantNameModal,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 
 class WhenIsGood(commands.Cog):
-    """Manage simple availability polls."""
+    """Discord cog for fast group scheduling and meeting coordination."""
 
     def __init__(self, bot: commands.Bot) -> None:
-        """Initialize the WhenIsGood cog."""
+        """Initialize the scheduling cog."""
         self.bot = bot
         self.log = logging.getLogger(__name__)
         self.service = WhenIsGoodService()
 
-    @app_commands.command(name="whenisgood", description="Create and manage availability polls")
+    @app_commands.command(name="whenisgood", description="Create and manage meeting scheduling polls")
     @app_commands.describe(
-        action="The availability action to perform",
-        poll_id="Optional poll ID to vote on or view results for",
+        action="Which scheduling action to perform",
+        event_id="Optional event id when you want a specific scheduling event",
     )
     @app_commands.choices(
         action=[
-            app_commands.Choice(name="calendar", value="calendar"),
-            app_commands.Choice(name="weekly", value="weekly"),
             app_commands.Choice(name="create", value="create"),
-            app_commands.Choice(name="vote", value="vote"),
+            app_commands.Choice(name="join", value="join"),
+            app_commands.Choice(name="edit", value="edit"),
             app_commands.Choice(name="results", value="results"),
+            app_commands.Choice(name="share", value="share"),
+            app_commands.Choice(name="finalize", value="finalize"),
+            app_commands.Choice(name="export", value="export"),
         ]
     )
-    async def whenisgood(self, interaction: discord.Interaction, action: str, poll_id: str | None = None) -> None:
-        """Handle availability poll actions."""
-        if action == "calendar":
-            await self.handle_calendar_action(interaction)
-        elif action == "weekly":
-            await self.handle_weekly_action(interaction)
-        elif action == "create":
+    async def whenisgood(self, interaction: discord.Interaction, action: str, event_id: str | None = None) -> None:
+        """Dispatch scheduling actions."""
+        if action == "create":
             await self.handle_create_action(interaction)
-        elif action == "vote":
-            await self.handle_vote_action(interaction, poll_id)
+        elif action == "join":
+            await self.handle_join_action(interaction, event_id)
+        elif action == "edit":
+            await self.handle_edit_action(interaction, event_id)
         elif action == "results":
-            await self.handle_results_action(interaction, poll_id)
-
-    async def handle_calendar_action(self, interaction: discord.Interaction) -> None:
-        """Open the calendar-based poll builder modal."""
-        if interaction.guild_id is None:
-            await interaction.response.send_message(
-                embed=error_embed("No Server", "Availability polls must be created in a server."),
-                ephemeral=True,
-            )
-            return
-
-        modal = ModelModal(
-            model_cls=WhenIsGoodCalendarSchema,
-            callback=self._handle_calendar_submit,
-            title="Start Calendar Poll",
-        )
-        await interaction.response.send_modal(modal)
-
-    async def handle_weekly_action(self, interaction: discord.Interaction) -> None:
-        """Open the weekly grid poll builder modal (Mon-Sun times)."""
-        if interaction.guild_id is None:
-            await interaction.response.send_message(
-                embed=error_embed("No Server", "Availability polls must be created in a server."),
-                ephemeral=True,
-            )
-            return
-
-        modal = ModelModal(
-            model_cls=WhenIsGoodCalendarSchema,
-            callback=self._handle_weekly_submit,
-            title="Start Weekly Poll",
-        )
-        await interaction.response.send_modal(modal)
+            await self.handle_results_action(interaction, event_id)
+        elif action == "share":
+            await self.handle_share_action(interaction, event_id)
+        elif action == "finalize":
+            await self.handle_finalize_action(interaction, event_id)
+        elif action == "export":
+            await self.handle_export_action(interaction, event_id)
 
     async def handle_create_action(self, interaction: discord.Interaction) -> None:
-        """Open the poll creation modal."""
+        """Open the meeting creation modal."""
         if interaction.guild_id is None:
             await interaction.response.send_message(
-                embed=error_embed("No Server", "Availability polls must be created in a server."),
+                embed=error_embed("No Server", "Scheduling events must be created in a server."),
                 ephemeral=True,
             )
             return
-
         modal = ModelModal(
-            model_cls=WhenIsGoodPollSchema,
+            model_cls=CreateMeetingSchema,
             callback=self._handle_create_submit,
-            title="Create Availability Poll",
+            title="Create Scheduling Event",
         )
         await interaction.response.send_modal(modal)
 
-    async def handle_vote_action(self, interaction: discord.Interaction, poll_id: str | None) -> None:
-        """Open a selected poll for voting."""
-        if interaction.guild_id is None:
-            await interaction.response.send_message(
-                embed=error_embed("No Server", "Availability polls must be voted on in a server."),
-                ephemeral=True,
-            )
-            return
-
-        await self._handle_poll_action(
+    async def handle_join_action(self, interaction: discord.Interaction, event_id: str | None) -> None:
+        """Open the participant name flow for an event."""
+        await self._resolve_event_action(
             interaction,
-            poll_id=poll_id,
-            on_selected=self._open_vote_view,
-            empty_message="Create a poll first with `/whenisgood action:create`.",
-            selection_prompt="Select which poll you want to vote on:",
+            event_id=event_id,
+            on_selected=lambda action_interaction, event: self.open_name_modal(action_interaction, event.event_id),
+            empty_message="Create a scheduling event first with `/whenisgood action:create`.",
+            selection_prompt="Select which scheduling event you want to join:",
         )
 
-    async def handle_results_action(self, interaction: discord.Interaction, poll_id: str | None) -> None:
-        """Show results for a selected poll."""
-        if interaction.guild_id is None:
-            await interaction.response.send_message(
-                embed=error_embed("No Server", "Availability results can only be shown in a server."),
-                ephemeral=True,
-            )
-            return
-
-        await self._handle_poll_action(
+    async def handle_edit_action(self, interaction: discord.Interaction, event_id: str | None) -> None:
+        """Open the availability editor for an event."""
+        await self._resolve_event_action(
             interaction,
-            poll_id=poll_id,
-            on_selected=self._show_results,
-            empty_message="Create a poll first with `/whenisgood action:create`.",
-            selection_prompt="Select which poll results you want to view:",
+            event_id=event_id,
+            on_selected=lambda action_interaction, event: self.open_availability_editor(
+                action_interaction,
+                event.event_id,
+            ),
+            empty_message="Create a scheduling event first with `/whenisgood action:create`.",
+            selection_prompt="Select which scheduling event you want to edit:",
         )
 
-    async def _handle_create_submit(self, interaction: discord.Interaction, poll_data: WhenIsGoodPollSchema) -> None:
-        """Create a poll from modal data and show the initial summary."""
-        guild_id = interaction.guild_id
-        if guild_id is None:
+    async def handle_results_action(self, interaction: discord.Interaction, event_id: str | None) -> None:
+        """Show overlap results for an event."""
+        await self._resolve_event_action(
+            interaction,
+            event_id=event_id,
+            on_selected=lambda action_interaction, event: self.show_event_results(action_interaction, event.event_id),
+            empty_message="Create a scheduling event first with `/whenisgood action:create`.",
+            selection_prompt="Select which scheduling event results you want to view:",
+        )
+
+    async def handle_share_action(self, interaction: discord.Interaction, event_id: str | None) -> None:
+        """Show the share link and join instructions for an event."""
+        await self._resolve_event_action(
+            interaction,
+            event_id=event_id,
+            on_selected=lambda action_interaction, event: self.share_event(action_interaction, event.event_id),
+            empty_message="Create a scheduling event first with `/whenisgood action:create`.",
+            selection_prompt="Select which scheduling event you want to share:",
+        )
+
+    async def handle_finalize_action(self, interaction: discord.Interaction, event_id: str | None) -> None:
+        """Open the finalization flow for the host."""
+        await self._resolve_event_action(
+            interaction,
+            event_id=event_id,
+            on_selected=lambda action_interaction, event: self.open_finalize_view(action_interaction, event.event_id),
+            empty_message="Create a scheduling event first with `/whenisgood action:create`.",
+            selection_prompt="Select which scheduling event you want to finalize:",
+        )
+
+    async def handle_export_action(self, interaction: discord.Interaction, event_id: str | None) -> None:
+        """Show export text for external calendar use."""
+        await self._resolve_event_action(
+            interaction,
+            event_id=event_id,
+            on_selected=lambda action_interaction, event: self.export_event(action_interaction, event.event_id),
+            empty_message="Create a scheduling event first with `/whenisgood action:create`.",
+            selection_prompt="Select which scheduling event you want to export:",
+        )
+
+    async def _handle_create_submit(self, interaction: discord.Interaction, meeting: CreateMeetingSchema) -> None:
+        """Create an event, post the shared announcement, and return the share link."""
+        if interaction.guild_id is None or interaction.channel_id is None:
             await interaction.response.send_message(
-                embed=error_embed("No Server", "Availability polls must be created in a server."),
+                embed=error_embed("No Server", "Scheduling events must be created in a server channel."),
                 ephemeral=True,
             )
             return
 
-        slots = [line.strip() for line in poll_data.slots.splitlines() if line.strip()]
-        poll = self.service.create_poll(
-            guild_id=guild_id,
-            creator_id=interaction.user.id,
-            title=poll_data.title,
-            description=poll_data.description,
-            slots=slots,
+        event = self.service.create_event(
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            host_id=interaction.user.id,
+            meeting=meeting,
         )
-        self.log.info("Created availability poll %s in guild %s", poll.poll_id, guild_id)
+        self.service.upsert_participant_name(event, interaction.user.id, interaction.user.display_name)
+
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel | discord.Thread):
+            await interaction.response.send_message(
+                embed=error_embed("Unsupported Channel", "Use this command in a text channel or thread."),
+                ephemeral=True,
+            )
+            return
+
+        announcement = await channel.send(
+            embeds=[self.service.build_announcement_embed(event)],
+            view=EventActionView(self, event.event_id),
+        )
+        self.service.set_announcement_message(event, announcement.id)
+        self.log.info("Created scheduling event %s in guild %s", event.event_id, interaction.guild_id)
 
         await interaction.response.send_message(
             embeds=[
-                success_embed(
-                    "Availability Poll Created",
-                    f"Your poll is ready. Poll ID: `{poll.poll_id}`. Ask people to run "
-                    "`/whenisgood action:vote` to respond.",
+                success_embed("Scheduling Event Created", "Your event is live and ready to share."),
+                info_embed(
+                    "Share Link",
+                    f"{announcement.jump_url}\n\nQuick join: `/whenisgood action:join event_id:{event.event_id}`",
                 ),
-                self.service.build_poll_embed(poll),
             ],
             ephemeral=True,
         )
 
-    async def _handle_calendar_submit(
-        self,
-        interaction: discord.Interaction,
-        poll_data: WhenIsGoodCalendarSchema,
-    ) -> None:
-        """Open the pseudo-calendar builder after collecting poll metadata."""
-        guild_id = interaction.guild_id
-        if guild_id is None:
-            await interaction.response.send_message(
-                embed=error_embed("No Server", "Availability polls must be created in a server."),
-                ephemeral=True,
+    async def open_name_modal(self, interaction: discord.Interaction, event_id: str) -> None:
+        """Open a simple modal so the participant can set their display name."""
+        event = self._require_event(interaction.guild_id, event_id)
+        if event is None:
+            await self._send_missing_event(interaction, event_id)
+            return
+        participant = self.service.get_participant(event, interaction.user.id)
+        if participant is not None:
+            await self._open_editor_for_event(interaction, event, participant.name)
+            return
+        await interaction.response.send_modal(
+            ParticipantNameModal(
+                lambda modal_interaction, name: self._save_name_and_edit(modal_interaction, event, name)
+            )
+        )
+
+    async def open_availability_editor(self, interaction: discord.Interaction, event_id: str) -> None:
+        """Open the availability editor, prompting for a name first if needed."""
+        event = self._require_event(interaction.guild_id, event_id)
+        if event is None:
+            await self._send_missing_event(interaction, event_id)
+            return
+        participant = self.service.get_participant(event, interaction.user.id)
+        if participant is None:
+            await interaction.response.send_modal(
+                ParticipantNameModal(
+                    lambda modal_interaction, name: self._save_name_and_edit(modal_interaction, event, name)
+                )
             )
             return
+        await self._open_editor_for_event(interaction, event, participant.name)
 
-        view = CalendarPollBuilderView(
-            service=self.service,
-            guild_id=guild_id,
-            creator_id=interaction.user.id,
-            title=poll_data.title,
-            description=poll_data.description,
-        )
-        await view.reply(
-            interaction,
-            embed=view.build_embed(),
+    async def show_event_results(self, interaction: discord.Interaction, event_id: str) -> None:
+        """Send the detailed overlap results embed."""
+        event = self._require_event(interaction.guild_id, event_id)
+        if event is None:
+            await self._send_missing_event(interaction, event_id)
+            return
+        await interaction.response.send_message(embed=self.service.build_results_embed(event), ephemeral=True)
+
+    async def share_event(self, interaction: discord.Interaction, event_id: str) -> None:
+        """Send sharing instructions and the public jump URL for an event."""
+        event = self._require_event(interaction.guild_id, event_id)
+        if event is None:
+            await self._send_missing_event(interaction, event_id)
+            return
+        jump_url = await self._get_jump_url(event)
+        await interaction.response.send_message(
+            embed=info_embed(
+                "Share This Event",
+                f"Public message: {jump_url}\n\nJoin shortcut: `/whenisgood action:join event_id:{event.event_id}`",
+            ),
             ephemeral=True,
         )
 
-    async def _handle_weekly_submit(
-        self,
-        interaction: discord.Interaction,
-        poll_data: WhenIsGoodCalendarSchema,
-    ) -> None:
-        """Open the weekly builder after collecting poll metadata."""
-        guild_id = interaction.guild_id
-        if guild_id is None:
+    async def open_finalize_view(self, interaction: discord.Interaction, event_id: str) -> None:
+        """Open a host-only view for choosing the final meeting time."""
+        event = self._require_event(interaction.guild_id, event_id)
+        if event is None:
+            await self._send_missing_event(interaction, event_id)
+            return
+        if interaction.user.id != event.host_id:
             await interaction.response.send_message(
-                embed=error_embed("No Server", "Availability polls must be created in a server."),
+                embed=error_embed("Not Allowed", "Only the host can finalize this event."),
                 ephemeral=True,
             )
             return
-
-        view = WeeklyPollBuilderView(
-            service=self.service,
-            guild_id=guild_id,
-            creator_id=interaction.user.id,
-            title=poll_data.title,
-            description=poll_data.description,
-        )
+        view = FinalizeView(event=event, service=self.service, on_confirm=self._finalize_slot)
         await view.reply(
             interaction,
-            embed=view.build_embed(),
+            embed=info_embed("Finalize Meeting", "Choose the slot the group wants to lock in."),
             ephemeral=True,
         )
 
-    async def _handle_poll_action(
+    async def export_event(self, interaction: discord.Interaction, event_id: str) -> None:
+        """Send export-ready plain text for the event."""
+        event = self._require_event(interaction.guild_id, event_id)
+        if event is None:
+            await self._send_missing_event(interaction, event_id)
+            return
+        export_text = self.service.build_export_text(event)
+        await interaction.response.send_message(
+            content=f"```text\n{export_text}\n```",
+            ephemeral=True,
+        )
+
+    async def _save_name_and_edit(
+        self,
+        interaction: discord.Interaction,
+        event: MeetingEvent,
+        display_name: str,
+    ) -> None:
+        """Store the participant name and immediately open the availability editor."""
+        self.service.upsert_participant_name(event, interaction.user.id, display_name)
+        await self._open_editor_for_event(interaction, event, display_name)
+
+    async def _open_editor_for_event(
+        self,
+        interaction: discord.Interaction,
+        event: MeetingEvent,
+        participant_name: str,
+    ) -> None:
+        """Open the main availability editor for a participant."""
+        view = AvailabilityEditorView(
+            service=self.service,
+            event=event,
+            user_id=interaction.user.id,
+            participant_name=participant_name,
+            on_saved=self._after_editor_saved,
+        )
+        await view.reply(
+            interaction,
+            embeds=[view.build_embed()],
+            ephemeral=True,
+        )
+
+    async def _after_editor_saved(self, interaction: discord.Interaction, event: MeetingEvent) -> None:
+        """Refresh the public event message and confirm the save."""
+        await self._refresh_announcement_message(event)
+        confirmation = success_embed(
+            "Availability Saved",
+            "Your availability was updated and overlap has been refreshed.",
+        )
+        editor_view = AvailabilityEditorView(
+            service=self.service,
+            event=event,
+            user_id=interaction.user.id,
+            participant_name=self.service.ensure_participant_name(
+                event,
+                interaction.user.id,
+                interaction.user.display_name,
+            ).name,
+            on_saved=self._after_editor_saved,
+        )
+        await interaction.response.edit_message(
+            embeds=[confirmation, editor_view.build_embed()],
+            view=editor_view,
+        )
+
+    async def _finalize_slot(self, interaction: discord.Interaction, event: MeetingEvent, slot_index: int) -> None:
+        """Persist the final human decision and refresh the public event message."""
+        self.service.finalize_slot(event, slot_index)
+        await self._refresh_announcement_message(event)
+        await interaction.response.edit_message(
+            embed=success_embed(
+                "Meeting Finalized",
+                f"Final pick: {self.service.slot_label(event, slot_index)}",
+            ),
+            view=None,
+        )
+
+    async def _refresh_announcement_message(self, event: MeetingEvent) -> None:
+        """Refresh the shared event announcement so everyone sees new overlap."""
+        if event.announcement_message_id is None:
+            return
+        channel = self.bot.get_channel(event.channel_id)
+        if not isinstance(channel, discord.TextChannel | discord.Thread):
+            return
+        try:
+            message = await channel.fetch_message(event.announcement_message_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            self.log.warning("Could not refresh scheduling announcement for event %s", event.event_id)
+            return
+        await message.edit(
+            embeds=[self.service.build_announcement_embed(event)],
+            view=EventActionView(self, event.event_id),
+        )
+
+    async def _resolve_event_action(
         self,
         interaction: discord.Interaction,
         *,
-        poll_id: str | None,
-        on_selected: Callable[[discord.Interaction, AvailabilityPoll], Awaitable[None]] | None = None,
+        event_id: str | None,
+        on_selected: Callable[[discord.Interaction, MeetingEvent], Awaitable[None]],
         empty_message: str,
         selection_prompt: str,
     ) -> None:
-        """Resolve a poll by id or let the user pick one when multiple exist."""
+        """Resolve a single event by id or by presenting an event picker."""
         guild_id = interaction.guild_id
         if guild_id is None:
-            return
-
-        callback = on_selected or self._show_results
-
-        if poll_id:
-            poll = self.service.get_guild_poll(guild_id, poll_id)
-            if poll is None:
-                await interaction.response.send_message(
-                    embed=error_embed("Poll Not Found", f"Could not find poll `{poll_id}` in this server."),
-                    ephemeral=True,
-                )
-                return
-            await callback(interaction, poll)
-            return
-
-        polls = self.service.list_polls_for_guild(guild_id)
-        if not polls:
             await interaction.response.send_message(
-                embed=error_embed("No Poll Found", empty_message),
+                embed=error_embed("No Server", "Scheduling actions must be used in a server."),
                 ephemeral=True,
             )
             return
+        if event_id:
+            event = self.service.get_guild_event(guild_id, event_id)
+            if event is None:
+                await self._send_missing_event(interaction, event_id)
+                return
+            await on_selected(interaction, event)
+            return
 
-        if len(polls) == 1:
-            await callback(interaction, polls[0])
+        events = self.service.list_events_for_guild(guild_id)
+        if not events:
+            await interaction.response.send_message(embed=error_embed("No Events", empty_message), ephemeral=True)
+            return
+        if len(events) == 1:
+            await on_selected(interaction, events[0])
             return
 
         await interaction.response.defer(ephemeral=True)
-        picker = PollPickerView(polls, callback)
+        picker = EventPickerView(events, on_selected)
         await interaction.followup.send(content=selection_prompt, view=picker, ephemeral=True)
 
-    async def _open_vote_view(self, interaction: discord.Interaction, poll: AvailabilityPoll) -> None:
-        """Open the voting view for a specific poll."""
-        self.log.info("Opening availability poll %s for user %s", poll.poll_id, interaction.user)
-        view = AvailabilityVoteView(poll, self.service)
-        await interaction.response.send_message(
-            embeds=[self.service.build_poll_embed(poll)],
-            view=view,
-            ephemeral=True,
-        )
-        view.message = await interaction.original_response()
+    def _require_event(self, guild_id: int | None, event_id: str) -> MeetingEvent | None:
+        """Return the guild event when available."""
+        if guild_id is None:
+            return None
+        return self.service.get_guild_event(guild_id, event_id)
 
-    async def _show_results(self, interaction: discord.Interaction, poll: AvailabilityPoll) -> None:
-        """Show results for a specific poll."""
+    async def _send_missing_event(self, interaction: discord.Interaction, event_id: str) -> None:
+        """Send a standard missing-event error."""
         await interaction.response.send_message(
-            embed=self.service.build_results_embed(poll),
+            embed=error_embed("Event Not Found", f"Could not find scheduling event `{event_id}` in this server."),
             ephemeral=True,
         )
+
+    async def _get_jump_url(self, event: MeetingEvent) -> str:
+        """Return the public jump url when the announcement still exists."""
+        if event.announcement_message_id is None:
+            return "Announcement message not found."
+        channel = self.bot.get_channel(event.channel_id)
+        if not isinstance(channel, discord.TextChannel | discord.Thread):
+            return "Announcement channel unavailable."
+        try:
+            message = await channel.fetch_message(event.announcement_message_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return "Announcement message unavailable."
+        return message.jump_url
 
 
 async def setup(bot: commands.Bot) -> None:
-    """Register the WhenIsGood cog."""
+    """Register the scheduling cog."""
     await bot.add_cog(WhenIsGood(bot))
