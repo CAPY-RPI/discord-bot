@@ -142,6 +142,7 @@ class Event(commands.Cog):
         self.log.info("Event cog initialized")
         # Track announcement messages: guild_id -> {event_name: message_id}
         self.event_announcements: dict[int, dict[str, int]] = {}
+        self._guild_org_ids: dict[int, str] = {}
 
     @app_commands.command(name="event", description="Manage events")
     @app_commands.describe(action="The action to perform with events")
@@ -200,14 +201,19 @@ class Event(commands.Cog):
     async def handle_list_action(self, interaction: discord.Interaction) -> None:
         """Handle listing all events."""
         guild_id = interaction.guild_id
+        guild = interaction.guild
         if not guild_id:
             embed = error_embed("No Server", "Events must be listed in a server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        if not guild:
+            embed = error_embed("No Server", "Could not determine the server.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
 
-        events = await self._fetch_backend_events(self._resolve_org_id(guild_id))
+        events = await self._fetch_backend_events(await self._resolve_org_id(guild))
 
         if not events:
             embed = error_embed("No Events", "No events found in this server.")
@@ -264,14 +270,13 @@ class Event(commands.Cog):
 
     async def handle_myevents_action(self, interaction: discord.Interaction) -> None:
         """Handle showing events the user has registered for via RSVP."""
-        guild_id = interaction.guild_id
         guild = interaction.guild
-        if not guild_id or not guild:
+        if not interaction.guild_id or not guild:
             embed = error_embed("No Server", "Events must be viewed in a server.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        events = await self._fetch_backend_events(self._resolve_org_id(guild_id))
+        events = await self._fetch_backend_events(await self._resolve_org_id(guild))
 
         if not events:
             embed = error_embed("No Events", "No events found in this server.")
@@ -336,14 +341,19 @@ class Event(commands.Cog):
             callback: Async callback to handle the selected event.
         """
         guild_id = interaction.guild_id
+        guild = interaction.guild
         if not guild_id:
             embed = error_embed("No Server", f"Events must be {action_name}ed in a server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        if not guild:
+            embed = error_embed("No Server", f"Could not determine the server to {action_name} events.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
 
-        events = await self._fetch_backend_events(self._resolve_org_id(guild_id))
+        events = await self._fetch_backend_events(await self._resolve_org_id(guild))
 
         if not events:
             embed = error_embed("No Events", f"No events found in this server to {action_name}.")
@@ -396,14 +406,33 @@ class Event(commands.Cog):
         time_str = self._format_event_time_est(event)
         return f"**When:** {time_str}\n**Where:** {event.location or 'TBD'}"
 
-    def _resolve_org_id(self, guild_id: int) -> str:
-        """Resolve backend org_id for the current guild.
+    async def _resolve_org_id(self, guild: discord.Guild) -> str:
+        """Resolve and cache the backend org id for the current guild."""
+        cached_org_id = self._guild_org_ids.get(guild.id)
+        if cached_org_id:
+            return cached_org_id
 
-        Temporary testing behavior: if BACKEND_TEST_ORG_ID is configured, use it.
-        """
-        if settings.backend_test_org_id.strip():
-            return settings.backend_test_org_id.strip()
-        return str(guild_id)
+        client = get_database_pool()
+        try:
+            organization = await client.get_bot_organization_by_guild_id(guild.id)
+        except BackendAPIError as exc:
+            if exc.status_code != HTTP_STATUS_NOT_FOUND:
+                raise
+
+            organization = await client.create_bot_organization(
+                {
+                    "guild_id": guild.id,
+                    "name": guild.name or f"Guild {guild.id}",
+                }
+            )
+
+        organization_id = str(organization.get("oid", "")).strip()
+        if not organization_id:
+            msg = "Backend did not return an organization id"
+            raise BackendAPIError(msg, status_code=0)
+
+        self._guild_org_ids[guild.id] = organization_id
+        return organization_id
 
     def _apply_event_fields(self, embed: discord.Embed, event: EventSchema) -> None:
         """Append event detail fields to an embed."""
@@ -598,8 +627,9 @@ class Event(commands.Cog):
     async def _handle_event_submit(self, interaction: discord.Interaction, event: EventSchema) -> None:
         """Process the valid event submission."""
         guild_id = interaction.guild_id
+        guild = interaction.guild
 
-        if not guild_id:
+        if not guild_id or not guild:
             embed = error_embed("No Server", "Events must be created in a server.")
             await self._respond_from_modal(interaction, embed)
             return
@@ -615,7 +645,7 @@ class Event(commands.Cog):
             # Create event in backend
             client = get_database_pool()
             request_data: CreateEventRequest = {
-                "org_id": self._resolve_org_id(guild_id),
+                "org_id": await self._resolve_org_id(guild),
                 "title": event.event_name,
                 "description": event.description,
                 "event_time": event_time_iso,
@@ -666,8 +696,9 @@ class Event(commands.Cog):
     ) -> None:
         """Process the event update submission."""
         guild_id = interaction.guild_id
+        guild = interaction.guild
 
-        if not guild_id:
+        if not guild_id or not guild:
             embed = error_embed("No Server", "Events must be updated in a server.")
             await self._respond_from_modal(interaction, embed)
             return

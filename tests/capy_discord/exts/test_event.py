@@ -68,13 +68,42 @@ def _event_schema(*, name: str, event_id: str | None = None) -> EventSchema:
     )
 
 
-def test_resolve_org_id_prefers_backend_test_org_id(cog: Event, monkeypatch: pytest.MonkeyPatch) -> None:
-    original = settings.backend_test_org_id
-    monkeypatch.setattr(settings, "backend_test_org_id", "org-test-123")
-    try:
-        assert cog._resolve_org_id(1285699448584011786) == "org-test-123"
-    finally:
-        monkeypatch.setattr(settings, "backend_test_org_id", original)
+def _guild(*, guild_id: int = 1285699448584011786, name: str = "Capy Guild") -> MagicMock:
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = guild_id
+    guild.name = name
+    return guild
+
+
+@pytest.mark.asyncio
+async def test_resolve_org_id_uses_existing_backend_org(cog: Event, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = MagicMock()
+    client.get_bot_organization_by_guild_id = AsyncMock(
+        return_value={"oid": "org-test-123", "guild_id": 1285699448584011786}
+    )
+    client.create_bot_organization = AsyncMock()
+    monkeypatch.setattr("capy_discord.exts.event.event.get_database_pool", lambda: client)
+
+    org_id = await cog._resolve_org_id(_guild())
+
+    assert org_id == "org-test-123"
+    client.create_bot_organization.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_org_id_creates_backend_org_when_missing(cog: Event, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = MagicMock()
+    client.get_bot_organization_by_guild_id = AsyncMock(
+        side_effect=BackendAPIError("missing", status_code=HTTP_STATUS_NOT_FOUND)
+    )
+    client.create_bot_organization = AsyncMock(return_value={"oid": "org-created", "guild_id": 1285699448584011786})
+    monkeypatch.setattr("capy_discord.exts.event.event.get_database_pool", lambda: client)
+
+    guild = _guild(name="Capy Test Server")
+    org_id = await cog._resolve_org_id(guild)
+
+    assert org_id == "org-created"
+    client.create_bot_organization.assert_awaited_once_with({"guild_id": guild.id, "name": guild.name})
 
 
 @pytest.mark.asyncio
@@ -187,14 +216,12 @@ async def test_handle_show_action_uses_fallback_and_sends_dropdown(
         ]
     )
 
-    original = settings.backend_test_org_id
-    monkeypatch.setattr(settings, "backend_test_org_id", "org-1")
+    interaction.guild = _guild()
+    monkeypatch.setattr(cog, "_resolve_org_id", AsyncMock(return_value="org-1"))
     monkeypatch.setattr("capy_discord.exts.event.event.get_database_pool", lambda: client)
     monkeypatch.setattr("capy_discord.exts.event.event.EventDropdownView.wait", _instant_wait)
-    try:
-        await cog.handle_show_action(interaction)
-    finally:
-        monkeypatch.setattr(settings, "backend_test_org_id", original)
+
+    await cog.handle_show_action(interaction)
 
     interaction.response.defer.assert_awaited_once_with(ephemeral=True)
     interaction.followup.send.assert_awaited_once()
@@ -227,14 +254,12 @@ async def test_handle_edit_action_uses_fallback_and_sends_dropdown(
         ]
     )
 
-    original = settings.backend_test_org_id
-    monkeypatch.setattr(settings, "backend_test_org_id", "org-1")
+    interaction.guild = _guild()
+    monkeypatch.setattr(cog, "_resolve_org_id", AsyncMock(return_value="org-1"))
     monkeypatch.setattr("capy_discord.exts.event.event.get_database_pool", lambda: client)
     monkeypatch.setattr("capy_discord.exts.event.event.EventDropdownView.wait", _instant_wait)
-    try:
-        await cog.handle_edit_action(interaction)
-    finally:
-        monkeypatch.setattr(settings, "backend_test_org_id", original)
+
+    await cog.handle_edit_action(interaction)
 
     interaction.response.defer.assert_awaited_once_with(ephemeral=True)
     interaction.followup.send.assert_awaited_once()
@@ -262,6 +287,8 @@ async def test_handle_list_action_sorts_upcoming_and_past(
     interaction: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    interaction.guild = _guild()
+    monkeypatch.setattr(cog, "_resolve_org_id", AsyncMock(return_value="org-1"))
     now = datetime.now(ZoneInfo("UTC"))
     events = [
         _event_schema(name="Past 2"),
@@ -294,11 +321,13 @@ async def test_handle_event_submit_success_calls_backend(
 ) -> None:
     client = MagicMock()
     client.create_event = AsyncMock()
+    interaction.guild = _guild()
     interaction.message = None
     interaction.response.is_done = MagicMock(return_value=False)
     interaction.response.edit_message = AsyncMock()
 
     monkeypatch.setattr("capy_discord.exts.event.event.get_database_pool", lambda: client)
+    monkeypatch.setattr(cog, "_resolve_org_id", AsyncMock(return_value="org-1"))
     event = _event_schema(name="Create Event")
 
     await cog._handle_event_submit(interaction, event)
@@ -319,11 +348,13 @@ async def test_handle_event_submit_backend_error_returns_error_embed(
 ) -> None:
     client = MagicMock()
     client.create_event = AsyncMock(side_effect=BackendAPIError("bad", status_code=400))
+    interaction.guild = _guild()
     interaction.message = None
     interaction.response.is_done = MagicMock(return_value=False)
     interaction.response.edit_message = AsyncMock()
 
     monkeypatch.setattr("capy_discord.exts.event.event.get_database_pool", lambda: client)
+    monkeypatch.setattr(cog, "_resolve_org_id", AsyncMock(return_value="org-1"))
 
     await cog._handle_event_submit(interaction, _event_schema(name="Create Event"))
 
@@ -336,11 +367,13 @@ async def test_handle_event_submit_backend_error_returns_error_embed(
 async def test_handle_event_update_success(cog: Event, interaction: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
     client = MagicMock()
     client.update_event = AsyncMock()
+    interaction.guild = _guild()
     interaction.message = None
     interaction.response.is_done = MagicMock(return_value=False)
     interaction.response.edit_message = AsyncMock()
 
     monkeypatch.setattr("capy_discord.exts.event.event.get_database_pool", lambda: client)
+    monkeypatch.setattr(cog, "_resolve_org_id", AsyncMock(return_value="org-1"))
     original_event = _event_schema(name="Original", event_id="evt-123")
     updated_event = _event_schema(name="Updated Name")
 
@@ -354,6 +387,7 @@ async def test_handle_event_update_success(cog: Event, interaction: MagicMock, m
 
 @pytest.mark.asyncio
 async def test_handle_event_update_missing_event_id(cog: Event, interaction: MagicMock) -> None:
+    interaction.guild = _guild()
     interaction.message = None
     interaction.response.is_done = MagicMock(return_value=False)
     interaction.response.edit_message = AsyncMock()
@@ -425,6 +459,8 @@ async def test_get_events_for_dropdown_timeout_sends_timeout_embed(
     monkeypatch.setattr(
         cog, "_fetch_backend_events", AsyncMock(return_value=[_event_schema(name="Event 1", event_id="evt-1")])
     )
+    interaction.guild = _guild()
+    monkeypatch.setattr(cog, "_resolve_org_id", AsyncMock(return_value="org-1"))
     monkeypatch.setattr("capy_discord.exts.event.event.EventDropdownView", _DropdownViewStub)
 
     await cog._get_events_for_dropdown(interaction, "show", AsyncMock())
@@ -539,7 +575,8 @@ async def test_event_command_routes_to_expected_handler(
     monkeypatch.setattr(cog, method_name, handler)
 
     choice = app_commands.Choice(name=action, value=action)
-    await cog.event.callback(cog, interaction, choice)
+    callback: Any = cog.event.callback
+    await callback(cog, interaction, choice)
 
     handler.assert_awaited_once_with(interaction)
 
@@ -638,6 +675,7 @@ async def test_handle_myevents_action_no_server_returns_error(cog: Event, intera
 @pytest.mark.asyncio
 async def test_handle_myevents_action_no_events_returns_error(cog: Event, interaction: MagicMock) -> None:
     interaction.guild = MagicMock(spec=discord.Guild)
+    cog._resolve_org_id = AsyncMock(return_value="org-1")  # type: ignore[method-assign]
     monkey_fetch = AsyncMock(return_value=[])
     cog._fetch_backend_events = monkey_fetch  # type: ignore[method-assign]
 
@@ -656,6 +694,7 @@ async def test_handle_myevents_action_no_registered_events(cog: Event, interacti
     events = [_event_schema(name="Upcoming 1"), _event_schema(name="Upcoming 2")]
     timeline = {"Upcoming 1": now + timedelta(hours=1), "Upcoming 2": now + timedelta(hours=2)}
 
+    cog._resolve_org_id = AsyncMock(return_value="org-1")  # type: ignore[method-assign]
     cog._fetch_backend_events = AsyncMock(return_value=events)  # type: ignore[method-assign]
     cog._event_datetime = MagicMock(side_effect=lambda event: timeline[event.event_name])  # type: ignore[method-assign]
     cog._is_user_registered = AsyncMock(return_value=False)  # type: ignore[method-assign]
@@ -683,6 +722,7 @@ async def test_handle_myevents_action_registered_events_sorted(cog: Event, inter
     async def _is_registered(event: EventSchema, _guild: discord.Guild, _user: discord.User) -> bool:
         return event.event_name in {"Soon", "Later"}
 
+    cog._resolve_org_id = AsyncMock(return_value="org-1")  # type: ignore[method-assign]
     cog._fetch_backend_events = AsyncMock(return_value=events)  # type: ignore[method-assign]
     cog._event_datetime = MagicMock(side_effect=lambda event: timeline[event.event_name])  # type: ignore[method-assign]
     cog._is_user_registered = AsyncMock(side_effect=_is_registered)  # type: ignore[method-assign]
@@ -703,7 +743,7 @@ async def test_on_announce_select_member_cache_unavailable(cog: Event, interacti
 
     channel = MagicMock(spec=discord.TextChannel)
     cog._get_announcement_channel = MagicMock(return_value=channel)  # type: ignore[method-assign]
-    cog.bot.user = None  # type: ignore[assignment]
+    object.__setattr__(cog.bot, "user", None)
 
     await cog._on_announce_select(interaction, _event_schema(name="Announce", event_id="evt-1"))
 
