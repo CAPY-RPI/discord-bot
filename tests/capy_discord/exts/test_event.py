@@ -1,3 +1,4 @@
+import secrets
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -13,6 +14,8 @@ from capy_discord.database import BackendAPIError, HTTP_STATUS_NOT_FOUND
 from capy_discord.exts.event._schemas import EventSchema
 from capy_discord.exts.event.event import ConfirmDeleteView, Event, EventDropdownSelect, EventDropdownView, setup
 
+TEST_GUILD_ID = 1_000_000_000_000_000_000 + secrets.randbelow(8_000_000_000_000_000_000)
+
 
 @pytest.fixture
 def bot() -> MagicMock:
@@ -27,7 +30,7 @@ def cog(bot: MagicMock) -> Event:
 @pytest.fixture
 def interaction() -> MagicMock:
     mock_interaction = MagicMock(spec=discord.Interaction)
-    mock_interaction.guild_id = 1285699448584011786
+    mock_interaction.guild_id = TEST_GUILD_ID
     mock_interaction.response = MagicMock()
     mock_interaction.response.defer = AsyncMock()
     mock_interaction.response.edit_message = AsyncMock()
@@ -68,7 +71,7 @@ def _event_schema(*, name: str, event_id: str | None = None) -> EventSchema:
     )
 
 
-def _guild(*, guild_id: int = 1285699448584011786, name: str = "Capy Guild") -> MagicMock:
+def _guild(*, guild_id: int = TEST_GUILD_ID, name: str = "Capy Guild") -> MagicMock:
     guild = MagicMock(spec=discord.Guild)
     guild.id = guild_id
     guild.name = name
@@ -78,9 +81,7 @@ def _guild(*, guild_id: int = 1285699448584011786, name: str = "Capy Guild") -> 
 @pytest.mark.asyncio
 async def test_resolve_org_id_uses_existing_backend_org(cog: Event, monkeypatch: pytest.MonkeyPatch) -> None:
     client = MagicMock()
-    client.get_bot_organization_by_guild_id = AsyncMock(
-        return_value={"oid": "org-test-123", "guild_id": 1285699448584011786}
-    )
+    client.get_bot_organization_by_guild_id = AsyncMock(return_value={"oid": "org-test-123", "guild_id": TEST_GUILD_ID})
     client.create_bot_organization = AsyncMock()
     monkeypatch.setattr("capy_discord.exts.event.event.get_database_pool", lambda: client)
 
@@ -96,7 +97,7 @@ async def test_resolve_org_id_creates_backend_org_when_missing(cog: Event, monke
     client.get_bot_organization_by_guild_id = AsyncMock(
         side_effect=BackendAPIError("missing", status_code=HTTP_STATUS_NOT_FOUND)
     )
-    client.create_bot_organization = AsyncMock(return_value={"oid": "org-created", "guild_id": 1285699448584011786})
+    client.create_bot_organization = AsyncMock(return_value={"oid": "org-created", "guild_id": TEST_GUILD_ID})
     monkeypatch.setattr("capy_discord.exts.event.event.get_database_pool", lambda: client)
 
     guild = _guild(name="Capy Test Server")
