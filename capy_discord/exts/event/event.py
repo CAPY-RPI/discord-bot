@@ -13,6 +13,7 @@ from capy_discord.database import (
     BackendAPIError,
     CreateEventRequest,
     EventResponse,
+    HTTP_STATUS_NOT_FOUND,
     UpdateEventRequest,
     get_database_pool,
 )
@@ -141,6 +142,7 @@ class Event(commands.Cog):
         self.log.info("Event cog initialized")
         # Track announcement messages: guild_id -> {event_name: message_id}
         self.event_announcements: dict[int, dict[str, int]] = {}
+        self._guild_org_ids: dict[int, str] = {}
 
     @app_commands.command(name="event", description="Manage events")
     @app_commands.describe(action="The action to perform with events")
@@ -199,15 +201,19 @@ class Event(commands.Cog):
     async def handle_list_action(self, interaction: discord.Interaction) -> None:
         """Handle listing all events."""
         guild_id = interaction.guild_id
+        guild = interaction.guild
         if not guild_id:
             embed = error_embed("No Server", "Events must be listed in a server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        if not guild:
+            embed = error_embed("No Server", "Could not determine the server.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
 
-        # Fetch events from backend using guild_id as org_id
-        events = await self._fetch_backend_events(str(guild_id))
+        events = await self._fetch_backend_events(await self._resolve_org_id(guild))
 
         if not events:
             embed = error_embed("No Events", "No events found in this server.")
@@ -264,15 +270,13 @@ class Event(commands.Cog):
 
     async def handle_myevents_action(self, interaction: discord.Interaction) -> None:
         """Handle showing events the user has registered for via RSVP."""
-        guild_id = interaction.guild_id
         guild = interaction.guild
-        if not guild_id or not guild:
+        if not interaction.guild_id or not guild:
             embed = error_embed("No Server", "Events must be viewed in a server.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
-        # Fetch events from backend using guild_id as org_id
-        events = await self._fetch_backend_events(str(guild_id))
+        events = await self._fetch_backend_events(await self._resolve_org_id(guild))
 
         if not events:
             embed = error_embed("No Events", "No events found in this server.")
@@ -337,15 +341,19 @@ class Event(commands.Cog):
             callback: Async callback to handle the selected event.
         """
         guild_id = interaction.guild_id
+        guild = interaction.guild
         if not guild_id:
             embed = error_embed("No Server", f"Events must be {action_name}ed in a server.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        if not guild:
+            embed = error_embed("No Server", f"Could not determine the server to {action_name} events.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
         await interaction.response.defer(ephemeral=True)
 
-        # Fetch events from backend using guild_id as org_id
-        events = await self._fetch_backend_events(str(guild_id))
+        events = await self._fetch_backend_events(await self._resolve_org_id(guild))
 
         if not events:
             embed = error_embed("No Events", f"No events found in this server to {action_name}.")
@@ -397,6 +405,34 @@ class Event(commands.Cog):
         """Format the when/where field for embeds."""
         time_str = self._format_event_time_est(event)
         return f"**When:** {time_str}\n**Where:** {event.location or 'TBD'}"
+
+    async def _resolve_org_id(self, guild: discord.Guild) -> str:
+        """Resolve and cache the backend org id for the current guild."""
+        cached_org_id = self._guild_org_ids.get(guild.id)
+        if cached_org_id:
+            return cached_org_id
+
+        client = get_database_pool()
+        try:
+            organization = await client.get_bot_organization_by_guild_id(guild.id)
+        except BackendAPIError as exc:
+            if exc.status_code != HTTP_STATUS_NOT_FOUND:
+                raise
+
+            organization = await client.create_bot_organization(
+                {
+                    "guild_id": guild.id,
+                    "name": guild.name or f"Guild {guild.id}",
+                }
+            )
+
+        organization_id = str(organization.get("oid", "")).strip()
+        if not organization_id:
+            msg = "Backend did not return an organization id"
+            raise BackendAPIError(msg, status_code=0)
+
+        self._guild_org_ids[guild.id] = organization_id
+        return organization_id
 
     def _apply_event_fields(self, embed: discord.Embed, event: EventSchema) -> None:
         """Append event detail fields to an embed."""
@@ -464,6 +500,7 @@ class Event(commands.Cog):
     async def _on_edit_select(self, interaction: discord.Interaction, selected_event: EventSchema) -> None:
         """Handle event selection for editing."""
         initial_data = {
+            "event_id": selected_event.event_id,
             "event_name": selected_event.event_name,
             "event_date": selected_event.event_date.strftime("%m-%d-%Y"),
             "event_time": selected_event.event_time.strftime("%H:%M"),
@@ -590,8 +627,9 @@ class Event(commands.Cog):
     async def _handle_event_submit(self, interaction: discord.Interaction, event: EventSchema) -> None:
         """Process the valid event submission."""
         guild_id = interaction.guild_id
+        guild = interaction.guild
 
-        if not guild_id:
+        if not guild_id or not guild:
             embed = error_embed("No Server", "Events must be created in a server.")
             await self._respond_from_modal(interaction, embed)
             return
@@ -604,14 +642,12 @@ class Event(commands.Cog):
                 event_datetime = event_datetime.replace(tzinfo=est)
             event_time_iso = event_datetime.astimezone(ZoneInfo("UTC")).isoformat()
 
-            # Encode event name in description
-            encoded_description = self._encode_event_description(event.event_name, event.description)
-
             # Create event in backend
             client = get_database_pool()
             request_data: CreateEventRequest = {
-                "org_id": str(guild_id),
-                "description": encoded_description,
+                "org_id": await self._resolve_org_id(guild),
+                "title": event.event_name,
+                "description": event.description,
                 "event_time": event_time_iso,
                 "location": event.location,
             }
@@ -660,8 +696,9 @@ class Event(commands.Cog):
     ) -> None:
         """Process the event update submission."""
         guild_id = interaction.guild_id
+        guild = interaction.guild
 
-        if not guild_id:
+        if not guild_id or not guild:
             embed = error_embed("No Server", "Events must be updated in a server.")
             await self._respond_from_modal(interaction, embed)
             return
@@ -674,21 +711,7 @@ class Event(commands.Cog):
                 event_datetime = event_datetime.replace(tzinfo=est)
             event_time_iso = event_datetime.astimezone(ZoneInfo("UTC")).isoformat()
 
-            # Encode event name in description
-            encoded_description = self._encode_event_description(updated_event.event_name, updated_event.description)
-
-            # For now, we need to find the event ID from the backend
-            # We'll search for events matching the original event name
-            client = get_database_pool()
-            backend_events = await client.list_events_by_organization(str(guild_id))
-
-            event_id = None
-            for be in backend_events:
-                desc = be.get("description", "")
-                name, _ = self._decode_event_description(desc)
-                if name == original_event.event_name:
-                    event_id = be.get("eid")
-                    break
+            event_id = original_event.event_id
 
             if not event_id:
                 embed = error_embed("Event Not Found", "Could not find the event to update.")
@@ -696,8 +719,10 @@ class Event(commands.Cog):
                 return
 
             # Update event in backend
+            client = get_database_pool()
             request_data: UpdateEventRequest = {
-                "description": encoded_description,
+                "title": updated_event.event_name,
+                "description": updated_event.description,
                 "event_time": event_time_iso,
                 "location": updated_event.location,
             }
@@ -753,20 +778,15 @@ class Event(commands.Cog):
                     await interaction.followup.send(embed=success, ephemeral=True)
                     return
 
+                event_id = selected_event.event_id
+                if not event_id:
+                    error = error_embed("Event Not Found", "Could not find the event to delete.")
+                    await interaction.followup.send(embed=error, ephemeral=True)
+                    return
+
                 client = get_database_pool()
-                backend_events = await client.list_events_by_organization(str(guild_id))
-
-                event_id = None
-                for be in backend_events:
-                    desc = be.get("description", "")
-                    name, _ = self._decode_event_description(desc)
-                    if name == selected_event.event_name:
-                        event_id = be.get("eid")
-                        break
-
-                if event_id:
-                    await client.delete_event(event_id)
-                    self.log.info("Deleted event '%s' from guild %s", selected_event.event_name, guild_id)
+                await client.delete_event(event_id)
+                self.log.info("Deleted event '%s' from guild %s", selected_event.event_name, guild_id)
 
                 success = success_embed("Event Deleted", "The event has been deleted successfully!")
                 await interaction.followup.send(embed=success, ephemeral=True)
@@ -783,12 +803,31 @@ class Event(commands.Cog):
 
     async def _fetch_backend_events(self, org_id: str) -> list[EventSchema]:
         """Fetch events from the backend for the given organization."""
+        client = get_database_pool()
         try:
-            client = get_database_pool()
             backend_events = await client.list_events_by_organization(org_id)
-        except BackendAPIError:
-            self.log.exception("Failed to fetch events from backend")
-            return []
+        except BackendAPIError as exc:
+            if exc.status_code == HTTP_STATUS_NOT_FOUND:
+                # Some bot API deployments expose /organizations/{oid}/events but not /events/org/{oid}.
+                try:
+                    backend_events = await client.list_organization_events(org_id)
+                except BackendAPIError as fallback_exc:
+                    if fallback_exc.status_code == HTTP_STATUS_NOT_FOUND:
+                        # Last-resort fallback for bot APIs that only expose GET /events.
+                        try:
+                            backend_events = await client.list_events(limit=100, offset=0)
+                        except BackendAPIError:
+                            self.log.exception("Failed to fetch events from backend")
+                            return []
+                    else:
+                        self.log.exception("Failed to fetch events from backend")
+                        return []
+            else:
+                self.log.exception("Failed to fetch events from backend")
+                return []
+
+        # If org_id is available in payload, keep this guild scoped; otherwise keep fallback results.
+        backend_events = [event for event in backend_events if str(event.get("org_id", "")).strip() in {"", org_id}]
 
         events = []
         for backend_event in backend_events:
@@ -801,11 +840,6 @@ class Event(commands.Cog):
         # Sort by event datetime
         events.sort(key=self._event_datetime)
         return events
-
-    @staticmethod
-    def _encode_event_description(event_name: str, description: str) -> str:
-        """Encode event_name into the description since backend doesn't have this field."""
-        return f"[capy_event_name]{event_name}\n{description}"
 
     @staticmethod
     def _decode_event_description(encoded: str) -> tuple[str, str]:
@@ -821,9 +855,12 @@ class Event(commands.Cog):
 
     def _from_backend_event(self, backend_event: EventResponse) -> EventSchema:
         """Convert a backend event response to EventSchema."""
-        # Decode the event name from description
+        # Prefer first-class title field; keep legacy encoded fallback for older rows.
         description_text = backend_event.get("description", "")
-        event_name, description = self._decode_event_description(description_text)
+        event_name = backend_event.get("title", "")
+        description = description_text
+        if not event_name:
+            event_name, description = self._decode_event_description(description_text)
 
         # Parse ISO event_time to date and time
         event_time_str = backend_event.get("event_time", "")
@@ -843,6 +880,7 @@ class Event(commands.Cog):
             event_time = datetime.now(ZoneInfo("America/New_York")).time()
 
         return EventSchema(
+            event_id=backend_event.get("eid"),
             event_name=event_name,
             event_date=event_date,
             event_time=event_time,

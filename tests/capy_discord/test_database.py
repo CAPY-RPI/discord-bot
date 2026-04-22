@@ -20,6 +20,8 @@ from capy_discord.database import (
     init_database_pool,
 )
 
+TEST_GUILD_ID = 1_000_000_000_000_000_000 + secrets.randbelow(8_000_000_000_000_000_000)
+
 
 class _FakeResponse:
     def __init__(self, status_code: int, payload: dict | list | str | None) -> None:
@@ -384,8 +386,8 @@ async def test_bot_me_endpoint_uses_expected_path(mock_request):
 async def test_organization_endpoints_use_expected_paths(mock_request):
     await close_database_pool()
     mock_request.side_effect = [
-        _FakeResponse(200, [{"oid": "org-1", "name": "Org One"}]),
-        _FakeResponse(200, {"oid": "org-1", "name": "Org One"}),
+        _FakeResponse(200, [{"oid": "org-1", "name": "Org One", "guild_id": TEST_GUILD_ID}]),
+        _FakeResponse(200, {"oid": "org-1", "name": "Org One", "guild_id": TEST_GUILD_ID}),
         _FakeResponse(HTTP_STATUS_CREATED, {"oid": "org-2", "name": "Org Two"}),
         _FakeResponse(200, {"oid": "org-2", "name": "Org Two Updated"}),
         _FakeResponse(204, None),
@@ -401,6 +403,7 @@ async def test_organization_endpoints_use_expected_paths(mock_request):
     org_events = await client.list_organization_events("org-1", limit=5, offset=0)
 
     assert organizations[0].get("oid") == "org-1"
+    assert organizations[0].get("guild_id") == TEST_GUILD_ID
     assert organization.get("name") == "Org One"
     assert created.get("oid") == "org-2"
     assert updated.get("name") == "Org Two Updated"
@@ -409,6 +412,35 @@ async def test_organization_endpoints_use_expected_paths(mock_request):
     list_kwargs = mock_request.await_args_list[0].kwargs
     assert list_kwargs["url"] == "organizations"
     assert list_kwargs["params"] == {"limit": 5, "offset": 0}
+
+    await close_database_pool()
+
+
+@pytest.mark.asyncio
+@patch("httpx.AsyncClient.request", new_callable=AsyncMock)
+async def test_bot_organization_endpoints_use_expected_paths(mock_request):
+    await close_database_pool()
+    mock_request.side_effect = [
+        _FakeResponse(200, {"oid": "org-3", "name": "Guild Org", "guild_id": TEST_GUILD_ID}),
+        _FakeResponse(
+            HTTP_STATUS_CREATED,
+            {"oid": "org-4", "name": "Guild Org", "guild_id": TEST_GUILD_ID},
+        ),
+    ]
+
+    client = await init_database_pool("http://localhost:8080")
+    organization = await client.get_bot_organization_by_guild_id(TEST_GUILD_ID)
+    created = await client.create_bot_organization({"guild_id": TEST_GUILD_ID, "name": "Guild Org"})
+
+    assert organization.get("guild_id") == TEST_GUILD_ID
+    assert created.get("oid") == "org-4"
+
+    get_kwargs = mock_request.await_args_list[0].kwargs
+    create_kwargs = mock_request.await_args_list[1].kwargs
+
+    assert get_kwargs["url"] == f"organizations/guilds/{TEST_GUILD_ID}"
+    assert create_kwargs["url"] == "organizations"
+    assert create_kwargs["json"] == {"guild_id": TEST_GUILD_ID, "name": "Guild Org"}
 
     await close_database_pool()
 

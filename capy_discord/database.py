@@ -65,6 +65,7 @@ class CreateEventRequest(TypedDict, total=False):
     """Represents event creation payloads."""
 
     org_id: Required[str]
+    title: str
     description: str
     event_time: str
     location: str
@@ -73,6 +74,7 @@ class CreateEventRequest(TypedDict, total=False):
 class UpdateEventRequest(TypedDict, total=False):
     """Represents event update payloads."""
 
+    title: str
     description: str
     event_time: str
     location: str
@@ -89,6 +91,7 @@ class EventResponse(TypedDict, total=False):
     """Represents event response payloads."""
 
     eid: str
+    title: str
     description: str
     event_time: str
     location: str
@@ -133,6 +136,13 @@ class CreateOrganizationRequest(TypedDict, total=False):
     creator_uid: str
 
 
+class BotCreateOrganizationRequest(TypedDict):
+    """Represents bot organization creation payloads."""
+
+    guild_id: Required[int]
+    name: Required[str]
+
+
 class UpdateOrganizationRequest(TypedDict, total=False):
     """Represents organization update payloads."""
 
@@ -144,6 +154,7 @@ class OrganizationResponse(TypedDict, total=False):
 
     oid: str
     name: str
+    guild_id: int
     date_created: str
     date_modified: str
 
@@ -356,8 +367,18 @@ class BackendAPIClient:
         payload = await self._request("GET", f"/organizations/{organization_id}")
         return cast("OrganizationResponse", _typed_dict(payload))
 
+    async def get_bot_organization_by_guild_id(self, guild_id: int) -> OrganizationResponse:
+        """Call `GET /organizations/guilds/{guild_id}`."""
+        payload = await self._request("GET", f"/organizations/guilds/{guild_id}")
+        return cast("OrganizationResponse", _typed_dict(payload))
+
     async def create_organization(self, data: CreateOrganizationRequest) -> OrganizationResponse:
         """Call `POST /organizations`."""
+        payload = await self._request("POST", "/organizations", json_body=data, expected_statuses={HTTP_STATUS_CREATED})
+        return cast("OrganizationResponse", _typed_dict(payload))
+
+    async def create_bot_organization(self, data: BotCreateOrganizationRequest) -> OrganizationResponse:
+        """Call `POST /organizations` for a bot-managed guild organization."""
         payload = await self._request("POST", "/organizations", json_body=data, expected_statuses={HTTP_STATUS_CREATED})
         return cast("OrganizationResponse", _typed_dict(payload))
 
