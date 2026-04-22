@@ -476,8 +476,7 @@ async def test_is_user_registered_returns_true_when_checkmark_reaction_contains_
     cog: Event,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    guild = MagicMock(spec=discord.Guild)
-    guild.id = 1
+    guild = _guild()
     user = MagicMock(spec=discord.User)
     event = _event_schema(name="RSVP Event")
     cog.event_announcements[guild.id] = {event.event_name: 55}
@@ -504,7 +503,7 @@ async def test_on_announce_select_no_channel_returns_error(
     interaction: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    interaction.guild = MagicMock(spec=discord.Guild)
+    interaction.guild = _guild(guild_id=interaction.guild_id)
     interaction.response.is_done = MagicMock(return_value=False)
     monkeypatch.setattr(cog, "_get_announcement_channel", lambda _guild: None)
 
@@ -522,8 +521,7 @@ async def test_on_announce_select_success_tracks_message_id(
     interaction: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    guild = MagicMock(spec=discord.Guild)
-    guild.id = 99
+    guild = _guild(guild_id=interaction.guild_id)
     interaction.guild = guild
     interaction.response.is_done = MagicMock(return_value=False)
 
@@ -736,8 +734,7 @@ async def test_handle_myevents_action_registered_events_sorted(cog: Event, inter
 
 @pytest.mark.asyncio
 async def test_on_announce_select_member_cache_unavailable(cog: Event, interaction: MagicMock) -> None:
-    guild = MagicMock(spec=discord.Guild)
-    guild.id = 12
+    guild = _guild(guild_id=interaction.guild_id)
     guild.me = None
     interaction.guild = guild
     interaction.response.is_done = MagicMock(return_value=False)
@@ -754,8 +751,7 @@ async def test_on_announce_select_member_cache_unavailable(cog: Event, interacti
 
 @pytest.mark.asyncio
 async def test_on_announce_select_no_send_permission(cog: Event, interaction: MagicMock) -> None:
-    guild = MagicMock(spec=discord.Guild)
-    guild.id = 34
+    guild = _guild(guild_id=interaction.guild_id)
     bot_member = MagicMock()
     guild.me = bot_member
     interaction.guild = guild
@@ -776,8 +772,7 @@ async def test_on_announce_select_no_send_permission(cog: Event, interaction: Ma
 
 @pytest.mark.asyncio
 async def test_is_user_registered_returns_false_when_no_message_id(cog: Event) -> None:
-    guild = MagicMock(spec=discord.Guild)
-    guild.id = 1
+    guild = _guild()
     user = MagicMock(spec=discord.User)
 
     result = await cog._is_user_registered(_event_schema(name="Missing Message"), guild, user)
@@ -887,8 +882,7 @@ async def test_fetch_backend_events_skips_malformed_event(cog: Event, monkeypatc
 
 @pytest.mark.asyncio
 async def test_on_announce_select_forbidden_returns_permission_denied(cog: Event, interaction: MagicMock) -> None:
-    guild = MagicMock(spec=discord.Guild)
-    guild.id = 51
+    guild = _guild(guild_id=interaction.guild_id)
     interaction.guild = guild
     interaction.response.is_done = MagicMock(return_value=False)
 
@@ -911,8 +905,7 @@ async def test_on_announce_select_forbidden_returns_permission_denied(cog: Event
 
 @pytest.mark.asyncio
 async def test_on_announce_select_http_exception_returns_failure(cog: Event, interaction: MagicMock) -> None:
-    guild = MagicMock(spec=discord.Guild)
-    guild.id = 52
+    guild = _guild(guild_id=interaction.guild_id)
     interaction.guild = guild
     interaction.response.is_done = MagicMock(return_value=False)
 

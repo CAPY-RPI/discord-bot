@@ -37,7 +37,6 @@ class Settings(EnvConfig):
     backend_api_timeout_seconds: float = 10.0
     backend_api_max_connections: int = 20
     backend_api_max_keepalive_connections: int = 10
-    backend_test_guild_id: int | None = None  # TEMPORARY
 
     @property
     def backend_api_base_url(self) -> str:
