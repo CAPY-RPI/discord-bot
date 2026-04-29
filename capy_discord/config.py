@@ -38,6 +38,12 @@ class Settings(EnvConfig):
     backend_api_max_connections: int = 20
     backend_api_max_keepalive_connections: int = 10
 
+    # Testing
+    test_user_id: int | None = None
+
+    # Database
+    database_url: str = "postgresql://localhost/capy_db"
+
     @property
     def backend_api_base_url(self) -> str:
         """Resolve backend API base URL from selected environment."""

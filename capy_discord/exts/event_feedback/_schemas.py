@@ -1,0 +1,33 @@
+from dataclasses import dataclass
+
+from pydantic import BaseModel, Field
+
+
+class EventFeedbackSchema(BaseModel):
+    """Pydantic model defining the Event Feedback schema and validation rules."""
+
+    rating: int = Field(title="Rating", description="Event rating from 1 to 10", ge=1, le=10)
+    improvement_suggestion: str | None = Field(
+        title="Improvement Suggestion",
+        description="What could the club do to make the event better?",
+        max_length=1000,
+        default=None,
+    )
+    anonymous: bool = Field(
+        title="Anonymous",
+        description="Whether this feedback should be shown anonymously in admin views.",
+        default=False,
+    )
+
+
+@dataclass
+class FeedbackRecord:
+    """Bundles all fields needed to save a feedback row to the database."""
+
+    guild_id: int
+    event_name: str
+    user_id: int
+    display_name: str | None
+    rating: int
+    improvement_suggestion: str | None
+    anonymous: bool
