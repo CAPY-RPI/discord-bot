@@ -323,27 +323,61 @@ class EventFeedback(commands.Cog):
         self,
         interaction: discord.Interaction,
         guild: discord.Guild,
+        event_name: str,  # noqa: ARG002 — unused until TODO(attendance) is implemented
     ) -> list[discord.Member] | None:
-        """Resolve which members should receive feedback DMs.
+        """Resolve which members should receive feedback DMs for the given event.
 
         Returns:
             A member list, or None if resolution fails and a user-facing message was sent.
         """
-        # For now, all non-bot guild members represent event attendees.
-        # [ATTENDANCE CALL]: Replace guild.members with the actual attendee list once implemented.
-        if settings.test_user_id is None:
-            return [m for m in guild.members if not m.bot]
-
         # TEST MODE: only DM the configured test user.
-        test_member = guild.get_member(settings.test_user_id)
-        if test_member is None:
-            await interaction.followup.send(
-                f"TEST MODE: user `{settings.test_user_id}` not found in this guild.", ephemeral=True
-            )
-            return None
+        if settings.test_user_id is not None:
+            test_member = guild.get_member(settings.test_user_id)
+            if test_member is None:
+                await interaction.followup.send(
+                    f"TEST MODE: user `{settings.test_user_id}` not found in this guild.", ephemeral=True
+                )
+                return None
+            self.log.info("TEST MODE: restricting feedback DM to user %s", settings.test_user_id)
+            return [test_member]
 
-        self.log.info("TEST MODE: restricting feedback DM to user %s", settings.test_user_id)
-        return [test_member]
+        # TODO(attendance): Fetch actual event attendees from the backend instead of all guild members.
+        #
+        # To implement this you need:
+        #
+        # 1. RESOLVE EVENT ID
+        #    The backend identifies events by `eid`, not by name. You need a way to look up the
+        #    eid for `event_name`. Options:
+        #      a) Change the command to accept an event ID directly instead of a name string.
+        #      b) Add a backend route GET /events?name=... and call it here.
+        #      c) List all events and filter by name:
+        #           from capy_discord.database import get_database_pool
+        #           db = get_database_pool()
+        #           events = await db.list_events()
+        #           match = next((e for e in events if e.get("description") == event_name), None)
+        #           if match is None:
+        #               await interaction.followup.send(f"Event '{event_name}' not found.", ephemeral=True)
+        #               return None
+        #           event_id = match["eid"]
+        #
+        # 2. FETCH ATTENDEES
+        #    Once you have the eid, get the registrations filtered to attending users:
+        #           registrations = await db.list_event_registrations(event_id)
+        #           attending_uids = {r["uid"] for r in registrations if r.get("is_attending")}
+        #
+        # 3. MAP BACKEND UIDs TO DISCORD MEMBERS
+        #    The backend uses its own uid (not Discord member IDs). You need a mapping table or
+        #    a profile lookup. For example, if the profile extension stores discord_id -> uid:
+        #           members = []
+        #           for uid in attending_uids:
+        #               discord_id = await lookup_discord_id_for_uid(uid)  # implement this lookup
+        #               member = guild.get_member(discord_id)
+        #               if member is not None:
+        #                   members.append(member)
+        #           return members
+        #
+        # Until then, fall back to all non-bot guild members.
+        return [m for m in guild.members if not m.bot]
 
     def _normalize_event_name(self, event_name: str) -> str | None:
         """Normalize an event name from user input."""
@@ -373,7 +407,7 @@ class EventFeedback(commands.Cog):
             await interaction.followup.send("This command must be used inside a server.", ephemeral=True)
             return
 
-        members = await self._resolve_target_members(interaction, guild)
+        members = await self._resolve_target_members(interaction, guild, event_name)
         if members is None:
             return
 
